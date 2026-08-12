@@ -1,0 +1,14 @@
+[Unit]
+Description=Cloudflare Tunnel for Akari Pulse remote MCP (pulse-mcp hostname)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+EnvironmentFile=/home/ubuntu/akari-pulse/.env
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run --token ${AKARI_TUNNEL_TOKEN}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

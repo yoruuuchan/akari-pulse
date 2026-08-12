@@ -1,0 +1,319 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "b1a2cca3bb710916a6e84e375fd7be1a",
+    "entities": [
+      {
+        "tableName": "health_events",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`event_id` TEXT NOT NULL, `timestamp_ms` INTEGER NOT NULL, `sample_timestamp_ms` INTEGER, `metric` TEXT NOT NULL, `has_value` INTEGER NOT NULL, `value_json` TEXT, `unit` TEXT, `source_device` TEXT NOT NULL, `source_module` TEXT, `source_api` TEXT, `quality` TEXT, `status` TEXT NOT NULL, `session_id` TEXT, `callback_delta_ms` INTEGER, `raw_error_code_json` TEXT, `raw_error_message` TEXT, `raw_event_json` TEXT NOT NULL, `watch_batch_id` TEXT NOT NULL, `watch_producer` TEXT NOT NULL, `received_at_ms` INTEGER NOT NULL, `upload_batch_id` TEXT, `synced_at_ms` INTEGER, PRIMARY KEY(`event_id`))",
+        "fields": [
+          {
+            "fieldPath": "eventId",
+            "columnName": "event_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timestamp",
+            "columnName": "timestamp_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sampleTimestamp",
+            "columnName": "sample_timestamp_ms",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "metric",
+            "columnName": "metric",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hasValue",
+            "columnName": "has_value",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "valueJson",
+            "columnName": "value_json",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "unit",
+            "columnName": "unit",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "sourceDevice",
+            "columnName": "source_device",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceModule",
+            "columnName": "source_module",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "sourceApi",
+            "columnName": "source_api",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "quality",
+            "columnName": "quality",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionId",
+            "columnName": "session_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "callbackDeltaMs",
+            "columnName": "callback_delta_ms",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "rawErrorCodeJson",
+            "columnName": "raw_error_code_json",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "rawErrorMessage",
+            "columnName": "raw_error_message",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "rawEventJson",
+            "columnName": "raw_event_json",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "watchBatchId",
+            "columnName": "watch_batch_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "watchProducer",
+            "columnName": "watch_producer",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "receivedAt",
+            "columnName": "received_at_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uploadBatchId",
+            "columnName": "upload_batch_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "syncedAt",
+            "columnName": "synced_at_ms",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "event_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_health_events_timestamp_ms",
+            "unique": false,
+            "columnNames": [
+              "timestamp_ms"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_health_events_timestamp_ms` ON `${TABLE_NAME}` (`timestamp_ms`)"
+          },
+          {
+            "name": "index_health_events_received_at_ms",
+            "unique": false,
+            "columnNames": [
+              "received_at_ms"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_health_events_received_at_ms` ON `${TABLE_NAME}` (`received_at_ms`)"
+          },
+          {
+            "name": "index_health_events_upload_batch_id",
+            "unique": false,
+            "columnNames": [
+              "upload_batch_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_health_events_upload_batch_id` ON `${TABLE_NAME}` (`upload_batch_id`)"
+          },
+          {
+            "name": "index_health_events_synced_at_ms",
+            "unique": false,
+            "columnNames": [
+              "synced_at_ms"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_health_events_synced_at_ms` ON `${TABLE_NAME}` (`synced_at_ms`)"
+          }
+        ]
+      },
+      {
+        "tableName": "upload_batches",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`batch_id` TEXT NOT NULL, `created_at_ms` INTEGER NOT NULL, `sent_at_ms` INTEGER NOT NULL, `event_count` INTEGER NOT NULL, `attempt_count` INTEGER NOT NULL, `last_attempt_at_ms` INTEGER, `last_error` TEXT, `completed_at_ms` INTEGER, PRIMARY KEY(`batch_id`))",
+        "fields": [
+          {
+            "fieldPath": "batchId",
+            "columnName": "batch_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sentAt",
+            "columnName": "sent_at_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventCount",
+            "columnName": "event_count",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "attemptCount",
+            "columnName": "attempt_count",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastAttemptAt",
+            "columnName": "last_attempt_at_ms",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastError",
+            "columnName": "last_error",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "completedAt",
+            "columnName": "completed_at_ms",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "batch_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_upload_batches_completed_at_ms",
+            "unique": false,
+            "columnNames": [
+              "completed_at_ms"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_upload_batches_completed_at_ms` ON `${TABLE_NAME}` (`completed_at_ms`)"
+          },
+          {
+            "name": "index_upload_batches_created_at_ms",
+            "unique": false,
+            "columnNames": [
+              "created_at_ms"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_upload_batches_created_at_ms` ON `${TABLE_NAME}` (`created_at_ms`)"
+          }
+        ]
+      },
+      {
+        "tableName": "watch_batches",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`batch_id` TEXT NOT NULL, `producer` TEXT NOT NULL, `payload_digest` TEXT NOT NULL, `sent_at_ms` INTEGER, `received_at_ms` INTEGER NOT NULL, `event_count` INTEGER NOT NULL, `accepted_count` INTEGER NOT NULL, `duplicate_count` INTEGER NOT NULL, PRIMARY KEY(`batch_id`))",
+        "fields": [
+          {
+            "fieldPath": "batchId",
+            "columnName": "batch_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "producer",
+            "columnName": "producer",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payloadDigest",
+            "columnName": "payload_digest",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sentAt",
+            "columnName": "sent_at_ms",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "receivedAt",
+            "columnName": "received_at_ms",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventCount",
+            "columnName": "event_count",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "acceptedCount",
+            "columnName": "accepted_count",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "duplicateCount",
+            "columnName": "duplicate_count",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "batch_id"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'b1a2cca3bb710916a6e84e375fd7be1a')"
+    ]
+  }
+}

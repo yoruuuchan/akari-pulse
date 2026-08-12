@@ -1,0 +1,754 @@
+<template>
+  <list class="screen" title="true" scrollbar="true">
+    <list-item type="li">
+      <div class="hero">
+        <div class="brand-row">
+          <div class="brand-mark">
+            <div class="orb orb-akari"></div>
+            <div class="orb orb-yoru"></div>
+          </div>
+          <div class="brand-copy">
+            <text class="title">akari pulse</text>
+            <text class="eyebrow">0.1.4 · wa2456c collect</text>
+          </div>
+        </div>
+        <text class="hero-copy">one test per cold launch · no startup native calls</text>
+      </div>
+    </list-item>
+
+    <list-item type="li">
+      <div class="status-card">
+        <div class="status-row">
+          <div class="status-name">
+            <div if="{{hasError}}" class="status-dot dot-error"></div>
+            <text class="label">active test</text>
+          </div>
+          <text class="status-value">{{activeTest}}</text>
+        </div>
+        <div class="divider"></div>
+        <div class="status-row">
+          <text class="label">last stage</text>
+          <text class="status-value">{{lastStage}}</text>
+        </div>
+        <div class="divider"></div>
+        <div class="status-row">
+          <text class="label">result</text>
+          <text class="status-value">{{resultStatus}}</text>
+        </div>
+        <div class="divider"></div>
+        <div class="status-row">
+          <text class="label">60 s survival</text>
+          <text class="status-value">{{survivalStatus}}</text>
+        </div>
+      </div>
+    </list-item>
+
+    <list-item type="li">
+      <div class="metric-card">
+        <text class="metric-label">direct heart rate result</text>
+        <div class="metric-line">
+          <text class="metric-value">{{heartRate}}</text>
+          <text class="metric-unit">bpm</text>
+        </div>
+        <text class="metric-note">{{resultNote}}</text>
+      </div>
+    </list-item>
+
+    <list-item type="li">
+      <div class="actions-card">
+        <text class="section-title">layer controls</text>
+        <text class="actions-note">relaunch the app before every test</text>
+        <div class="button-row">
+          <input type="button" class="button button-secondary button-half" value="ui control" @click="runUiControl" />
+          <input type="button" class="button button-secondary button-half button-last" value="storage set + read" @click="runStorageControl" />
+        </div>
+        <div class="button-row">
+          <input type="button" class="button button-secondary button-half" value="queue + persist" @click="runQueueControl" />
+          <input type="button" class="button button-secondary button-half button-last" value="transport init" @click="runTransportControl" />
+        </div>
+      </div>
+    </list-item>
+
+    <list-item type="li">
+      <div class="actions-card">
+        <text class="section-title">network relay</text>
+        <text class="actions-note">https route via pulse.example.com</text>
+        <div class="button-row">
+          <input type="button" class="button button-secondary button-half" value="net probe" @click="runNetProbe" />
+          <input type="button" class="button button-secondary button-half button-last" value="send batch https" @click="runSendBatchHttps" />
+        </div>
+        <text class="warning-copy">probe sends three GETs; send posts the real queue and dequeues only on a full ack</text>
+      </div>
+    </list-item>
+
+    <list-item type="li">
+      <div class="actions-card health-card">
+        <text class="section-title">collect and sync</text>
+        <text class="actions-note">real values, layer diags, then sync to relay</text>
+        <div class="button-row">
+          <input type="button" class="button button-primary button-half" value="collect hr live" @click="runCollectHrLive" />
+          <input type="button" class="button button-primary button-half button-last" value="collect recents" @click="runCollectRecents" />
+        </div>
+        <div class="button-row">
+          <input type="button" class="button button-primary button-half" value="collect stats" @click="runCollectStats" />
+        </div>
+        <text class="warning-copy">hr live runs a 60 s window; watch_transport pass rides the next sync after the first ack</text>
+      </div>
+    </list-item>
+
+    <list-item type="li">
+      <div class="actions-card health-card">
+        <text class="section-title">recent hr layers</text>
+        <text class="actions-note">all calls use dataTypes: [heart_rate]</text>
+        <div class="button-row">
+          <input type="button" class="button button-primary button-half" value="hr invoke only" @click="runHrInvokeOnly" />
+          <input type="button" class="button button-primary button-half button-last" value="hr callback only" @click="runHrCallbackOnly" />
+        </div>
+        <div class="button-row">
+          <input type="button" class="button button-primary button-half" value="hr direct ui" @click="runHrDirect" />
+          <input type="button" class="button button-primary button-half button-last" value="hr full pipeline" @click="runHrFull" />
+        </div>
+        <text class="warning-copy">invoke only deliberately ignores callback payloads; survived does not mean health pass</text>
+      </div>
+    </list-item>
+
+    <list-item type="li">
+      <div class="queue-card">
+        <div class="queue-head">
+          <text class="section-title">saved diagnostic queue</text>
+          <text class="queue-count">{{queueDepth}}</text>
+        </div>
+        <text class="queue-line">storage {{storageStatus}} · {{queueLoaded}}</text>
+        <text class="queue-line">last {{recoveredEvent}}</text>
+        <input type="button" class="button button-recover" value="load saved queue state" @click="loadRecoveredQueue" />
+        <text class="warning-copy">recovery reads storage; relaunch before running an isolation test</text>
+      </div>
+    </list-item>
+
+    <list-item type="li">
+      <div class="diagnostics-card">
+        <div class="diagnostics-head">
+          <text class="section-title">diagnostics</text>
+          <text class="diagnostics-meta">{{diagnostics.length}} events</text>
+        </div>
+        <input type="button" class="button button-log" value="{{diagnosticsLabel}}" @click="toggleDiagnostics" />
+        <div if="{{showDiagnostics}}" class="log-list">
+          <div class="log-line" for="{{diagnostics}}">
+            <text class="log-text" style="lines: 3; text-overflow: ellipsis;">{{$item}}</text>
+          </div>
+          <text if="{{diagnostics.length === 0}}" class="empty-log">no runtime events yet</text>
+        </div>
+      </div>
+    </list-item>
+
+    <list-item>
+      <div class="footer-space"></div>
+    </list-item>
+  </list>
+</template>
+
+<script>
+  import * as queue from '../../lib/queue'
+  import * as diagnostics from '../../lib/hr-diagnostics'
+  import * as netDiagnostics from '../../lib/net-diagnostics'
+  import * as collectRuns from '../../lib/collect-runs'
+  import * as transport from '../../lib/transport'
+
+  export default {
+    data: {
+      activeTest: 'none',
+      lastStage: 'static idle',
+      resultStatus: 'not run',
+      survivalStatus: 'not run',
+      resultNote: 'no health api called at startup',
+      heartRate: '--',
+      hasError: false,
+      testLocked: false,
+      recoveryUsed: false,
+      transportStarted: false,
+      transportOpened: false,
+      transportTimer: null,
+      queueDepth: 'not loaded',
+      storageStatus: 'not run',
+      queueLoaded: 'manual load not run',
+      recoveredEvent: 'none',
+      showDiagnostics: false,
+      diagnosticsLabel: 'show diagnostics',
+      diagnostics: [],
+    },
+
+    onInit() {
+      const self = this
+      queue.setObserver(function (summary) {
+        self.onQueueChange(summary)
+      })
+      diagnostics.setObserver(function (message) {
+        self.onDiagnosticMessage(message)
+      })
+      netDiagnostics.setObserver(function (message) {
+        self.onDiagnosticMessage(message)
+      })
+      collectRuns.setObserver(function (message) {
+        self.onDiagnosticMessage(message)
+      })
+    },
+
+    onDestroy() {
+      diagnostics.shutdown()
+      netDiagnostics.shutdown()
+      collectRuns.shutdown()
+      if (this.transportTimer) clearTimeout(this.transportTimer)
+      this.transportTimer = null
+      if (this.transportStarted) transport.shutdown()
+    },
+
+    lockTest(label) {
+      if (this.testLocked) {
+        this.addLog('FAIL relaunch required: one test already ran in this process')
+        return false
+      }
+      if (this.recoveryUsed) {
+        this.addLog('FAIL relaunch required: queue recovery already accessed storage')
+        this.resultStatus = 'relaunch required'
+        this.hasError = true
+        return false
+      }
+      this.testLocked = true
+      this.activeTest = label
+      this.lastStage = 'begin'
+      this.resultStatus = 'running'
+      this.survivalStatus = 'waiting'
+      this.resultNote = 'observe the last visible stage if the watch restarts'
+      this.hasError = false
+      return true
+    },
+
+    runUiControl() {
+      if (!this.lockTest('ui control')) return
+      diagnostics.runUiControl()
+    },
+
+    runStorageControl() {
+      if (!this.lockTest('storage set + read')) return
+      diagnostics.runStorageControl()
+    },
+
+    runQueueControl() {
+      if (!this.lockTest('queue + persist')) return
+      diagnostics.runQueueControl()
+    },
+
+    runHrInvokeOnly() {
+      if (!this.lockTest('hr invoke only')) return
+      diagnostics.runHrInvokeOnly()
+    },
+
+    runHrCallbackOnly() {
+      if (!this.lockTest('hr callback only')) return
+      diagnostics.runHrCallbackOnly()
+    },
+
+    runHrDirect() {
+      if (!this.lockTest('hr direct ui')) return
+      diagnostics.runHrDirect()
+    },
+
+    runHrFull() {
+      if (!this.lockTest('hr full pipeline')) return
+      diagnostics.runHrFull()
+    },
+
+    runNetProbe() {
+      if (!this.lockTest('net probe')) return
+      netDiagnostics.runNetProbe()
+    },
+
+    runSendBatchHttps() {
+      if (!this.lockTest('send batch https')) return
+      netDiagnostics.runSendBatchHttps()
+    },
+
+    runCollectHrLive() {
+      if (!this.lockTest('collect hr live')) return
+      collectRuns.runCollectHrLive()
+    },
+
+    runCollectRecents() {
+      if (!this.lockTest('collect recents')) return
+      collectRuns.runCollectRecents()
+    },
+
+    runCollectStats() {
+      if (!this.lockTest('collect stats')) return
+      collectRuns.runCollectStats()
+    },
+
+    runTransportControl() {
+      if (!this.lockTest('transport init')) return
+      this.lastStage = 'begin transport instance'
+      this.addLog('BEGIN transport init')
+      const self = this
+      const initialized = transport.initializeRpc(function (message) {
+        self.onTransportMessage(message)
+      })
+      if (!initialized) {
+        if (this.resultStatus === 'running') {
+          this.lastStage = 'transport init returned false'
+          this.resultStatus = 'error'
+          this.hasError = true
+          this.addLog('FAIL transport init returned false')
+        }
+        return
+      }
+      this.transportStarted = true
+      this.lastStage = 'transport instance returned'
+      this.resultStatus = 'returned'
+      this.addLog('PASS rpc instance returned')
+      this.transportTimer = setTimeout(function () {
+        self.transportTimer = null
+        if (self.transportOpened) {
+          self.survivalStatus = 'survived after open'
+          self.lastStage = 'survived 60 s after open'
+        } else {
+          self.survivalStatus = 'no open in 60 s'
+          self.lastStage = 'no open within 60 s'
+          self.addLog('NO_OPEN_WITHIN_60S is an Akari harness observation')
+        }
+      }, 60000)
+    },
+
+    loadRecoveredQueue() {
+      if (this.testLocked) {
+        this.addLog('FAIL queue recovery unavailable while a test is active')
+        return
+      }
+      this.recoveryUsed = true
+      this.addLog('BEGIN load saved diagnostic queue')
+      try {
+        const summary = queue.load()
+        this.onQueueChange(summary)
+        if (summary.storage_status === 'PASS') {
+          this.addLog('PASS load saved diagnostic queue')
+        } else {
+          this.addLog(`FAIL queue load ${summary.storage_status}: ${summary.storage_error || ''}`)
+          this.hasError = true
+        }
+      } catch (error) {
+        this.storageStatus = 'error'
+        this.hasError = true
+        this.addLog(`FAIL queue load CALL_THROWN: ${String(error)}`)
+      }
+    },
+
+    onDiagnosticMessage(message) {
+      if (!message) return
+      if (message.kind === 'diagnostic_stage') {
+        this.activeTest = String(message.label || message.test || 'diagnostic').toLowerCase()
+        this.lastStage = this.displayStage(message.stage)
+        const status = String(message.status || 'running').toLowerCase()
+        const isSurvivalStage =
+          String(message.stage).indexOf('SURVIVED_60S') === 0 ||
+          message.stage === 'NO_CALLBACK_WITHIN_60S'
+        if (!isSurvivalStage || message.stage === 'NO_CALLBACK_WITHIN_60S') {
+          this.resultStatus = status
+        }
+        if (
+          status === 'error' ||
+          status === 'denied' ||
+          status === 'api_missing' ||
+          status === 'unsupported'
+        ) {
+          this.hasError = true
+        }
+        if (String(message.stage).indexOf('SURVIVED_60S') === 0) {
+          this.survivalStatus = 'survived 60 s'
+        } else if (message.stage === 'NO_CALLBACK_WITHIN_60S') {
+          this.survivalStatus = 'no callback in 60 s'
+        }
+        if (message.raw_error_code !== undefined) {
+          this.addLog(
+            `FAIL ${message.label} code=${message.raw_error_code} message=${message.raw_error_message || ''}`
+          )
+        } else if (message.stage === 'BEGIN') {
+          this.addLog(`BEGIN ${message.label}`)
+        } else {
+          this.addLog(`${message.stage} ${message.label}`)
+        }
+        return
+      }
+
+      if (message.kind === 'diagnostic_result') {
+        this.resultStatus = String(message.status || 'unknown').toLowerCase()
+        this.resultNote = message.note || 'diagnostic completed'
+        if (
+          (message.test === 'hr_direct' || message.test === 'hr_full_pipeline') &&
+          message.status === 'PASS'
+        ) {
+          this.heartRate = this.displayValue(message.value)
+        }
+        if (message.status === 'PASS') {
+          this.addLog(`PASS ${message.label}`)
+        } else {
+          this.addLog(`${message.status} ${message.label}`)
+        }
+      }
+    },
+
+    onQueueChange(summary) {
+      if (!summary) return
+      this.queueDepth = String(summary.depth)
+      this.storageStatus = String(summary.storage_status || 'NOT_RUN').toLowerCase()
+      this.queueLoaded = summary.loaded ? 'loaded' : 'not loaded'
+      if (summary.last_event) {
+        const value =
+          summary.last_event.value === undefined ? '' : ` ${this.displayValue(summary.last_event.value)}`
+        this.recoveredEvent = `${summary.last_event.metric} ${String(
+          summary.last_event.status
+        ).toLowerCase()}${value}`
+      } else {
+        this.recoveredEvent = 'none'
+      }
+      if (summary.storage_error) {
+        this.hasError = true
+        this.addLog(`storage: ${summary.storage_error}`)
+      }
+    },
+
+    onTransportMessage(message) {
+      if (!message || message.kind !== 'rpc_connection') return
+      const status = String(message.status || 'unknown').toLowerCase()
+      this.lastStage = `transport ${status}`
+      this.resultStatus = status
+      if (status === 'pass') {
+        this.transportOpened = true
+        this.resultNote = 'interconnect onOpen received; no message was sent'
+        this.addLog('PASS transport onOpen')
+      } else if (status === 'error' || status === 'api_missing') {
+        this.hasError = true
+        this.addLog(
+          `FAIL transport code=${message.code || status} message=${message.message || ''}`
+        )
+      } else {
+        this.addLog(`transport ${status}`)
+      }
+    },
+
+    displayStage(stage) {
+      return String(stage || 'unknown')
+        .split('_')
+        .join(' ')
+        .toLowerCase()
+    },
+
+    displayValue(value) {
+      if (typeof value === 'number') return String(Math.round(value * 100) / 100)
+      if (typeof value === 'string') return value
+      try {
+        return JSON.stringify(value)
+      } catch (error) {
+        return String(value)
+      }
+    },
+
+    toggleDiagnostics() {
+      this.showDiagnostics = !this.showDiagnostics
+      this.diagnosticsLabel = this.showDiagnostics ? 'hide diagnostics' : 'show diagnostics'
+    },
+
+    addLog(message) {
+      const now = new Date()
+      const hour = this.twoDigits(now.getHours())
+      const minute = this.twoDigits(now.getMinutes())
+      const second = this.twoDigits(now.getSeconds())
+      this.diagnostics.unshift(`${hour}:${minute}:${second} ${message}`)
+      if (this.diagnostics.length > 32) this.diagnostics.pop()
+    },
+
+    twoDigits(value) {
+      return value < 10 ? `0${value}` : String(value)
+    },
+  }
+</script>
+
+<style lang="less">
+  .screen {
+    width: 100%;
+    background-color: #0b1020;
+  }
+
+  .hero,
+  .status-card,
+  .metric-card,
+  .actions-card,
+  .queue-card,
+  .diagnostics-card {
+    width: 418px;
+    margin-left: 24px;
+    margin-top: 16px;
+    border-radius: 24px;
+  }
+
+  .hero {
+    padding: 28px 26px 22px 26px;
+    background-color: #11182d;
+    flex-direction: column;
+  }
+
+  .brand-row,
+  .status-row,
+  .status-name,
+  .metric-line,
+  .button-row,
+  .queue-head,
+  .diagnostics-head {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .brand-mark {
+    width: 66px;
+    height: 50px;
+    position: relative;
+  }
+
+  .orb {
+    width: 40px;
+    height: 40px;
+    border-radius: 40px;
+    position: absolute;
+    top: 4px;
+  }
+
+  .orb-akari {
+    left: 0;
+    background-color: #f07830;
+  }
+
+  .orb-yoru {
+    left: 26px;
+    background-color: #526dd2;
+  }
+
+  .brand-copy {
+    margin-left: 16px;
+    flex-direction: column;
+  }
+
+  .title {
+    color: #f5f7ff;
+    font-size: 34px;
+    font-weight: bold;
+  }
+
+  .eyebrow,
+  .hero-copy,
+  .actions-note,
+  .metric-note,
+  .queue-line,
+  .diagnostics-meta,
+  .empty-log,
+  .warning-copy {
+    color: #8993ad;
+    font-size: 18px;
+  }
+
+  .eyebrow {
+    margin-top: 2px;
+  }
+
+  .hero-copy {
+    margin-top: 18px;
+  }
+
+  .status-card,
+  .queue-card,
+  .diagnostics-card {
+    padding: 8px 24px;
+    background-color: #151d34;
+    flex-direction: column;
+  }
+
+  .status-row {
+    width: 100%;
+    height: 58px;
+    justify-content: space-between;
+  }
+
+  .status-name {
+    flex-direction: row;
+  }
+
+  .status-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 12px;
+    margin-right: 12px;
+  }
+
+  .dot-error {
+    background-color: #f07830;
+  }
+
+  .label,
+  .status-value,
+  .section-title {
+    color: #dbe2f5;
+    font-size: 22px;
+  }
+
+  .status-value {
+    max-width: 220px;
+    color: #aab5d2;
+    font-size: 19px;
+  }
+
+  .divider {
+    width: 100%;
+    height: 1px;
+    background-color: #25304d;
+  }
+
+  .metric-card {
+    padding: 26px;
+    background-color: #17213a;
+    flex-direction: column;
+  }
+
+  .metric-label {
+    color: #8f9bb8;
+    font-size: 19px;
+  }
+
+  .metric-line {
+    margin-top: 2px;
+    align-items: flex-end;
+  }
+
+  .metric-value {
+    color: #f5f7ff;
+    font-size: 72px;
+    font-weight: bold;
+  }
+
+  .metric-unit {
+    color: #7a95fa;
+    font-size: 24px;
+    margin-left: 12px;
+    margin-bottom: 10px;
+  }
+
+  .metric-note {
+    margin-top: 4px;
+  }
+
+  .actions-card {
+    padding: 18px;
+    background-color: #11182d;
+    flex-direction: column;
+  }
+
+  .health-card {
+    background-color: #151d34;
+  }
+
+  .actions-note {
+    margin-top: 6px;
+  }
+
+  .button {
+    width: 382px;
+    height: 66px;
+    border-radius: 34px;
+    color: #f7f9ff;
+    font-size: 20px;
+    font-weight: bold;
+  }
+
+  .button-primary {
+    background-color: #526dd2;
+  }
+
+  .button-secondary,
+  .button-log {
+    background-color: #263355;
+  }
+
+  .button-row {
+    margin-top: 12px;
+    width: 382px;
+  }
+
+  .button-half {
+    width: 185px;
+  }
+
+  .button-last {
+    margin-left: 12px;
+  }
+
+  .warning-copy {
+    margin-top: 14px;
+    color: #aab5d2;
+  }
+
+  .queue-card,
+  .diagnostics-card {
+    padding-top: 22px;
+    padding-bottom: 22px;
+  }
+
+  .queue-head,
+  .diagnostics-head {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .queue-count {
+    color: #38c8c0;
+    font-size: 26px;
+    font-weight: bold;
+  }
+
+  .queue-line {
+    margin-top: 10px;
+  }
+
+  .button-recover,
+  .button-log {
+    width: 370px;
+    height: 56px;
+    margin-top: 16px;
+    background-color: #263355;
+    font-size: 20px;
+  }
+
+  .diagnostics-meta {
+    max-width: 210px;
+  }
+
+  .log-list {
+    width: 100%;
+    margin-top: 10px;
+    flex-direction: column;
+  }
+
+  .log-line {
+    width: 100%;
+    padding: 10px 0;
+    border-bottom-width: 1px;
+    border-bottom-color: #25304d;
+  }
+
+  .log-text {
+    color: #b8c3dd;
+    font-size: 17px;
+  }
+
+  .empty-log {
+    margin-top: 12px;
+  }
+
+  .footer-space {
+    height: 84px;
+  }
+</style>

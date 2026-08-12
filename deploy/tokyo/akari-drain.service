@@ -1,0 +1,10 @@
+[Unit]
+Description=Drain the Cloudflare relay into the local Akari Health service (oneshot)
+After=akari-health.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/akari-pulse
+EnvironmentFile=/home/ubuntu/akari-pulse/.env
+ExecStart=/opt/node24/bin/node scripts/drain-relay.mjs

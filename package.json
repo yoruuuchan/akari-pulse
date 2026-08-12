@@ -1,0 +1,19 @@
+{
+  "name": "akari-pulse",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "server",
+    "mcp"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start:server": "npm --workspace @akari-pulse/server start",
+    "start:mcp": "npm --workspace @akari-pulse/mcp start",
+    "test": "npm run test --workspaces --if-present"
+  }
+}
+

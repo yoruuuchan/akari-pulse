@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://akari.local/schemas/watch-batch.schema.json",
+  "title": "Akari Pulse producer batch",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["batch_id", "producer", "events"],
+  "properties": {
+    "batch_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "producer": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "sent_at": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 500,
+      "items": {
+        "$ref": "health-event.schema.json"
+      }
+    }
+  }
+}
+

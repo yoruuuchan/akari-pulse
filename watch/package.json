@@ -1,0 +1,20 @@
+{
+  "name": "@akari-pulse/watch",
+  "version": "0.1.2",
+  "private": true,
+  "packageManager": "pnpm@9.9.0",
+  "description": "Akari Pulse BlueOS health probe for vivo WATCH GT",
+  "scripts": {
+    "build:debug": "jax build --device-type watch-square -f",
+    "build:release": "jax release --device-type watch-square"
+  },
+  "prettier": {
+    "singleQuote": true,
+    "semi": false,
+    "printWidth": 100,
+    "tabWidth": 2,
+    "bracketSameLine": true,
+    "htmlWhitespaceSensitivity": "ignore",
+    "trailingComma": "es5"
+  }
+}

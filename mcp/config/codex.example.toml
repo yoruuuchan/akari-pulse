@@ -1,0 +1,13 @@
+# Append this table to ~/.codex/config.toml after adjusting paths for the host.
+# AKARI_HEALTH_TOKEN is forwarded from the local process environment and is not stored here.
+
+[mcp_servers.akari-health]
+command = 'F:\node.exe'
+args = ['E:\BlueOS\akari-pulse\mcp\src\index.js']
+cwd = 'E:\BlueOS\akari-pulse'
+env_vars = ['AKARI_HEALTH_TOKEN']
+startup_timeout_sec = 30
+
+[mcp_servers.akari-health.env]
+AKARI_HEALTH_URL = 'http://127.0.0.1:8787'
+

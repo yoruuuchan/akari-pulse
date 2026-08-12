@@ -1,0 +1,54 @@
+{
+  "package": "com.akaripulse.watch",
+  "name": "Akari Pulse",
+  "versionName": "0.1.4",
+  "versionCode": 5,
+  "appCategory": [
+    "sports"
+  ],
+  "icon": "/assets/images/logo.png",
+  "features": [
+    {
+      "name": "blueos.health.health"
+    },
+    {
+      "name": "blueos.hardware.sensor.sensor"
+    },
+    {
+      "name": "blueos.storage.storage"
+    },
+    {
+      "name": "blueos.network.fetch"
+    },
+    {
+      "name": "blueos.bluexlink.connectionManager"
+    }
+  ],
+  "deviceTypeList": [
+    "watch",
+    "watch-square",
+    "watch-round"
+  ],
+  "config": {
+    "designWidth": 466
+  },
+  "router": {
+    "entry": "pages/home",
+    "pages": {
+      "pages/home": {
+        "component": "index"
+      }
+    }
+  },
+  "display": {
+    "backgroundColor": "#0B1020"
+  },
+  "permissions": [
+    {
+      "name": "watch.permission.READ_HEALTH_DATA"
+    },
+    {
+      "name": "watch.permission.STEP_COUNTER"
+    }
+  ]
+}

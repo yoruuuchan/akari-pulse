@@ -1,0 +1,496 @@
+import { McpServer } from "@modelcontextprotocol/server";
+import * as z from "zod/v4";
+import { HealthApi, HealthApiError, loadApiConfig } from "./health-api.js";
+
+const metricName = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
+const timeInput = z.union([
+  z.number().int().nonnegative(),
+  z.string().min(1).describe("ISO-8601 timestamp, including an offset when not UTC"),
+]);
+const statusSchema = z.enum(["PASS", "NO_DATA", "DENIED", "UNSUPPORTED", "API_MISSING", "ERROR"]);
+const outputSchema = z.object({
+  ok: z.boolean(),
+  status: statusSchema,
+  generated_at: z.number().int().nonnegative(),
+  data: z.unknown(),
+});
+
+const readAnnotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+};
+
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function asEpoch(value, name) {
+  if (typeof value === "number") return value;
+  if (!ISO_TIMESTAMP.test(value)) {
+    throw new Error(`${name} must be a valid ISO-8601 timestamp with Z or an explicit UTC offset`);
+  }
+  const parsed = Date.parse(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`${name} must be a valid ISO-8601 timestamp or Unix epoch milliseconds`);
+  }
+  return parsed;
+}
+
+function queryString(entries) {
+  const params = new URLSearchParams();
+  for (const [key, value] of entries) {
+    if (value === undefined || value === null || value === "") continue;
+    params.set(key, String(value));
+  }
+  const encoded = params.toString();
+  return encoded ? `?${encoded}` : "";
+}
+
+function textResult(payload, summary) {
+  return {
+    content: [{ type: "text", text: summary }],
+    structuredContent: payload,
+  };
+}
+
+function toolFailure(error) {
+  const code = error instanceof HealthApiError ? error.code : "MCP_TOOL_ERROR";
+  const status = error instanceof HealthApiError && error.statusCode ? `HTTP ${error.statusCode}` : "local";
+  return {
+    isError: true,
+    content: [{ type: "text", text: `${code} (${status}): ${error.message}` }],
+  };
+}
+
+function summarizeLatest(payload, metric = null) {
+  const records = payload.data.records;
+  if (records.length === 0) return `no ${metric || "health"} observations are available`;
+  if (records.length === 1) {
+    const record = records[0];
+    const value = Object.hasOwn(record, "value") ? JSON.stringify(record.value) : record.status;
+    return `${record.metric}: ${value}${record.unit ? ` ${record.unit}` : ""} · ${new Date(record.timestamp).toISOString()} · ${record.source_device}`;
+  }
+  return `${records.length} latest health metrics returned`;
+}
+
+function reflectRecordStatus(payload) {
+  const records = payload.data.records;
+  if (records.length === 0 || records.some((record) => record.status === "PASS")) return payload;
+  payload.status = ["ERROR", "DENIED", "API_MISSING", "UNSUPPORTED", "NO_DATA"].find((status) =>
+    records.some((record) => record.status === status),
+  ) || "NO_DATA";
+  return payload;
+}
+
+async function invoke(handler) {
+  try {
+    return await handler();
+  } catch (error) {
+    return toolFailure(error);
+  }
+}
+
+export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
+  const server = new McpServer({ name: "akari-health", version: "0.1.0" });
+
+  server.registerTool(
+    "health_status",
+    {
+      title: "Akari health pipeline status",
+      description: "Check Akari Health reachability, database state, ingest freshness, metric freshness, and each watch-to-MCP diagnostic layer.",
+      inputSchema: z.object({}),
+      outputSchema,
+      annotations: readAnnotations,
+    },
+    async () =>
+      invoke(async () => {
+        const payload = await api.request("/v1/status");
+        payload.data.layers.mcp_query = { status: "PASS", timestamp: Date.now() };
+        return textResult(
+          payload,
+          `akari health: ${payload.status} · ${payload.data.database.record_count} records · ingest ${payload.data.layers.backend_ingest.status} · mcp query PASS`,
+        );
+      }),
+  );
+
+  server.registerTool(
+    "health_latest",
+    {
+      title: "Latest health observations",
+      description: "Read the latest successful observation for one metric, or one latest observation per available metric. Raw records are read-only.",
+      inputSchema: z.object({ metric: metricName.optional() }),
+      outputSchema,
+      annotations: readAnnotations,
+    },
+    async ({ metric }) =>
+      invoke(async () => {
+        const payload = await api.request(`/v1/health/latest${queryString([["metric", metric]])}`);
+        return textResult(payload, summarizeLatest(payload, metric));
+      }),
+  );
+
+  server.registerTool(
+    "health_today",
+    {
+      title: "Today's health summary",
+      description: "Read bounded metric summaries for a local calendar date. The UTC offset is explicit so 'today' is reproducible.",
+      inputSchema: z.object({
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        timezone_offset_minutes: z.number().int().min(-720).max(840).default(540),
+        metrics: z.array(metricName).max(32).optional(),
+      }),
+      outputSchema,
+      annotations: readAnnotations,
+    },
+    async ({ date, timezone_offset_minutes, metrics }) =>
+      invoke(async () => {
+        const payload = await api.request(
+          `/v1/health/today${queryString([
+            ["date", date],
+            ["timezone_offset_minutes", timezone_offset_minutes],
+            ["metrics", metrics?.join(",")],
+          ])}`,
+        );
+        return textResult(payload, `${payload.data.date}: ${Object.keys(payload.data.metrics).length} health metrics summarized`);
+      }),
+  );
+
+  server.registerTool(
+    "health_heart_rate",
+    {
+      title: "Heart rate near a time",
+      description: "Read the latest heart rate, or the nearest real sample within a bounded window around a timestamp.",
+      inputSchema: z.object({
+        at: timeInput.optional(),
+        window_ms: z.number().int().min(1000).max(3600000).default(300000),
+      }),
+      outputSchema,
+      annotations: readAnnotations,
+    },
+    async ({ at, window_ms }) =>
+      invoke(async () => {
+        if (at === undefined) {
+          const payload = await api.request("/v1/health/latest?metric=heart_rate");
+          return textResult(payload, summarizeLatest(payload, "heart_rate"));
+        }
+        const requestedAt = asEpoch(at, "at");
+        const payload = await api.request(
+          `/v1/health/range${queryString([
+            ["metric", "heart_rate"],
+            ["from", Math.max(0, requestedAt - window_ms)],
+            ["to", requestedAt + window_ms],
+            ["limit", 2000],
+          ])}`,
+        );
+        const records = payload.data.records;
+        const nearest = records.reduce(
+          (best, record) =>
+            !best || Math.abs(record.timestamp - requestedAt) < Math.abs(best.timestamp - requestedAt)
+              ? record
+              : best,
+          null,
+        );
+        const result = {
+          ok: true,
+          status: nearest ? "PASS" : "NO_DATA",
+          generated_at: payload.generated_at,
+          data: {
+            requested_at: requestedAt,
+            window_ms,
+            record: nearest,
+            distance_ms: nearest ? Math.abs(nearest.timestamp - requestedAt) : null,
+          },
+        };
+        return textResult(
+          result,
+          nearest
+            ? `heart_rate: ${nearest.value} ${nearest.unit || "bpm"} · ${Math.abs(nearest.timestamp - requestedAt)}ms from requested time`
+            : "no heart-rate sample exists in the requested window",
+        );
+      }),
+  );
+
+  server.registerTool(
+    "health_heart_rate_range",
+    {
+      title: "Heart-rate samples in a range",
+      description: "Read bounded raw heart-rate samples between two timestamps, preserving device timestamps and callback deltas.",
+      inputSchema: z.object({
+        from: timeInput,
+        to: timeInput,
+        limit: z.number().int().min(1).max(2000).default(1000),
+      }),
+      outputSchema,
+      annotations: readAnnotations,
+    },
+    async ({ from, to, limit }) =>
+      invoke(async () => {
+        const fromEpoch = asEpoch(from, "from");
+        const toEpoch = asEpoch(to, "to");
+        if (fromEpoch > toEpoch) throw new Error("from cannot be after to");
+        const payload = await api.request(
+          `/v1/health/range${queryString([
+            ["metric", "heart_rate"],
+            ["from", fromEpoch],
+            ["to", toEpoch],
+            ["limit", limit],
+          ])}`,
+        );
+        return textResult(payload, `${payload.data.records.length} heart-rate samples returned`);
+      }),
+  );
+
+  server.registerTool(
+    "health_steps",
+    {
+      title: "Steps",
+      description: "Read official daily steps when available, otherwise report the maximum observed cumulative-since-boot sensor value without treating it as a calendar-day total.",
+      inputSchema: z.object({
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        timezone_offset_minutes: z.number().int().min(-720).max(840).default(540),
+      }),
+      outputSchema,
+      annotations: readAnnotations,
+    },
+    async ({ date, timezone_offset_minutes }) =>
+      invoke(async () => {
+        const payload = date
+          ? await api.request(
+              `/v1/health/today${queryString([
+                ["date", date],
+                ["timezone_offset_minutes", timezone_offset_minutes],
+                ["metrics", "step_count,step_count_sensor"],
+              ])}`,
+            )
+          : await api.request("/v1/health/latest?metrics=step_count,step_count_sensor");
+        const official = date
+          ? payload.data.metrics.step_count
+          : payload.data.records.find((record) => record.metric === "step_count");
+        const sensor = date
+          ? payload.data.metrics.step_count_sensor
+          : payload.data.records.find((record) => record.metric === "step_count_sensor");
+        const text = official
+          ? date
+            ? `steps on ${date}: ${official.daily_value} (official daily statistic)`
+            : summarizeLatest({ data: { records: [official] } }, "step_count")
+          : sensor
+            ? date
+              ? `steps observed on ${date}: ${sensor.daily_value} (maximum cumulative-since-boot value; not a calendar-day total)`
+              : `${summarizeLatest({ data: { records: [sensor] } }, "step_count_sensor")} · cumulative since boot; not a calendar-day total`
+            : `no step observations are available${date ? ` for ${date}` : ""}`;
+        return textResult(payload, text);
+      }),
+  );
+
+  server.registerTool(
+    "health_sleep",
+    {
+      title: "Sleep observations",
+      description: "Read sleep status, sleep-unit, and sleep-stage observations in a bounded time range. No stage or duration is inferred when records are absent.",
+      inputSchema: z.object({
+        from: timeInput.optional(),
+        to: timeInput.optional(),
+        limit: z.number().int().min(1).max(2000).default(1000),
+      }),
+      outputSchema,
+      annotations: readAnnotations,
+    },
+    async ({ from, to, limit }) =>
+      invoke(async () => {
+        const toEpoch = to === undefined ? Date.now() : asEpoch(to, "to");
+        const fromEpoch = from === undefined ? Math.max(0, toEpoch - 48 * 3600000) : asEpoch(from, "from");
+        if (fromEpoch > toEpoch) throw new Error("from cannot be after to");
+        const payload = await api.request(
+          `/v1/health/range${queryString([
+            ["metrics", "sleep_status,sleep_unit,sleep_stages"],
+            ["from", fromEpoch],
+            ["to", toEpoch],
+            ["limit", limit],
+            ["status", "ALL"],
+          ])}`,
+        );
+        reflectRecordStatus(payload);
+        const statuses = [...new Set(payload.data.records.map((record) => record.status))];
+        return textResult(
+          payload,
+          `${payload.data.records.length} sleep observations returned${statuses.length > 0 ? ` (${statuses.join(", ")})` : ""}`,
+        );
+      }),
+  );
+
+  server.registerTool(
+    "health_activity",
+    {
+      title: "Daily activity",
+      description: "Read daily distance, calories, intensity, energy, standing, speed, and walking observations with explicit source semantics.",
+      inputSchema: z.object({
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        timezone_offset_minutes: z.number().int().min(-720).max(840).default(540),
+      }),
+      outputSchema,
+      annotations: readAnnotations,
+    },
+    async ({ date, timezone_offset_minutes }) =>
+      invoke(async () => {
+        const metrics = "distance,calories,intensity_sport,energy,standing,walking_speed,walking_status,speed";
+        const payload = await api.request(
+          `/v1/health/today${queryString([
+            ["date", date],
+            ["timezone_offset_minutes", timezone_offset_minutes],
+            ["metrics", metrics],
+          ])}`,
+        );
+        return textResult(payload, `${payload.data.date}: ${Object.keys(payload.data.metrics).length} activity metrics returned`);
+      }),
+  );
+
+  for (const [toolName, metric, title] of [
+    ["health_spo2", "spo2", "Blood oxygen"],
+    ["health_stress", "stress", "Stress"],
+  ]) {
+    server.registerTool(
+      toolName,
+      {
+        title,
+        description: `Read the latest ${metric} observation, or bounded raw observations when a time range is supplied.`,
+        inputSchema: z.object({
+          from: timeInput.optional(),
+          to: timeInput.optional(),
+          limit: z.number().int().min(1).max(2000).default(500),
+        }),
+        outputSchema,
+        annotations: readAnnotations,
+      },
+      async ({ from, to, limit }) =>
+        invoke(async () => {
+          if (from === undefined && to === undefined) {
+            const payload = await api.request(`/v1/health/latest?metric=${metric}&status=ALL`);
+            reflectRecordStatus(payload);
+            return textResult(payload, summarizeLatest(payload, metric));
+          }
+          const toEpoch = to === undefined ? Date.now() : asEpoch(to, "to");
+          const fromEpoch = from === undefined ? 0 : asEpoch(from, "from");
+          if (fromEpoch > toEpoch) throw new Error("from cannot be after to");
+          const payload = await api.request(
+            `/v1/health/range${queryString([
+              ["metric", metric],
+              ["from", fromEpoch],
+              ["to", toEpoch],
+              ["limit", limit],
+              ["status", "ALL"],
+            ])}`,
+          );
+          reflectRecordStatus(payload);
+          return textResult(payload, `${payload.data.records.length} ${metric} observations returned`);
+        }),
+    );
+  }
+
+  server.registerTool(
+    "health_sessions",
+    {
+      title: "Health sessions",
+      description: "List bounded heart-rate experiment session metadata. Raw health records remain read-only.",
+      inputSchema: z.object({
+        from: timeInput.optional(),
+        to: timeInput.optional(),
+        status: z.enum(["OPEN", "CLOSED"]).optional(),
+        limit: z.number().int().min(1).max(1000).default(100),
+      }),
+      outputSchema,
+      annotations: readAnnotations,
+    },
+    async ({ from, to, status, limit }) =>
+      invoke(async () => {
+        const payload = await api.request(
+          `/v1/sessions${queryString([
+            ["from", from === undefined ? undefined : asEpoch(from, "from")],
+            ["to", to === undefined ? undefined : asEpoch(to, "to")],
+            ["status", status],
+            ["limit", limit],
+          ])}`,
+        );
+        return textResult(payload, `${payload.data.sessions.length} health sessions returned`);
+      }),
+  );
+
+  server.registerTool(
+    "health_start_session",
+    {
+      title: "Start heart-rate session",
+      description: "Create one open experiment session for a source device. This writes session metadata only and does not modify raw health observations.",
+      inputSchema: z.object({
+        source_device: z.string().min(1).max(128).default("WA2456C"),
+        label: z.string().max(256).optional(),
+        started_at: timeInput.optional(),
+      }),
+      outputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    async ({ source_device, label, started_at }) =>
+      invoke(async () => {
+        const payload = await api.request("/v1/sessions", {
+          method: "POST",
+          body: {
+            source_device,
+            ...(label === undefined ? {} : { label }),
+            ...(started_at === undefined ? {} : { started_at: asEpoch(started_at, "started_at") }),
+          },
+        });
+        return textResult(payload, `session ${payload.data.session.session_id} started for ${source_device}`);
+      }),
+  );
+
+  server.registerTool(
+    "health_stop_session",
+    {
+      title: "Stop heart-rate session",
+      description: "Close an open experiment session. This writes session metadata only and is idempotent for an already closed session.",
+      inputSchema: z.object({
+        session_id: z.string().min(1).max(128),
+        ended_at: timeInput.optional(),
+      }),
+      outputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+    },
+    async ({ session_id, ended_at }) =>
+      invoke(async () => {
+        const payload = await api.request(`/v1/sessions/${encodeURIComponent(session_id)}/stop`, {
+          method: "POST",
+          body: ended_at === undefined ? {} : { ended_at: asEpoch(ended_at, "ended_at") },
+        });
+        return textResult(payload, `session ${session_id} closed at ${new Date(payload.data.session.ended_at).toISOString()}`);
+      }),
+  );
+
+  server.registerTool(
+    "health_session_summary",
+    {
+      title: "Heart-rate session summary",
+      description: "Summarize real session samples and timestamped events. Baseline and response windows are explicit, and results never claim causality.",
+      inputSchema: z.object({
+        session_id: z.string().min(1).max(128),
+        baseline_window_ms: z.number().int().min(1000).max(3600000).default(60000),
+        response_window_ms: z.number().int().min(1000).max(3600000).default(300000),
+        rise_threshold_bpm: z.number().int().min(1).max(100).default(5),
+      }),
+      outputSchema,
+      annotations: readAnnotations,
+    },
+    async ({ session_id, baseline_window_ms, response_window_ms, rise_threshold_bpm }) =>
+      invoke(async () => {
+        const payload = await api.request(
+          `/v1/sessions/${encodeURIComponent(session_id)}/summary${queryString([
+            ["baseline_window_ms", baseline_window_ms],
+            ["response_window_ms", response_window_ms],
+            ["rise_threshold_bpm", rise_threshold_bpm],
+          ])}`,
+        );
+        return textResult(
+          payload,
+          `session ${session_id}: ${payload.data.coverage.heart_rate_samples} heart-rate samples · ${payload.data.coverage.correlation_events} correlation events · temporal association only`,
+        );
+      }),
+  );
+
+  return server;
+}

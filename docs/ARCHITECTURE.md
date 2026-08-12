@@ -1,0 +1,117 @@
+# Akari Pulse architecture
+
+## System boundary
+
+```text
+vivo WATCH GT (WA2456C)
+  health + sensor APIs
+  durable unsent queue
+        |
+        | @blueos.network.fetch  (HTTPS, X-Akari-Bridge-Token)
+        v
+akari-pulse-relay (Cloudflare Worker + D1 buffer)
+  strict batch validation, insert-then-ACK
+  https://pulse.yoru-and-akari.dev
+        |
+        | akari-drain.timer on the Tokyo VPS, every 2 min
+        | (Bearer ADMIN_TOKEN pull, delete only after acknowledgement)
+        v
+Akari Health service  (Tokyo VPS, 127.0.0.1:28787, systemd)
+  append-only health records
+  sessions + correlation events
+  SQLite
+        |
+        | loopback authenticated HTTP
+        v
+Akari Health MCP
+  14 narrow tools
+  stdio (local dev)  /  Streamable HTTP 127.0.0.1:28788 (production)
+        |
+        | Cloudflare Tunnel (remotely-managed connector)
+        v
+https://pulse-mcp.yoru-and-akari.dev/mcp/<secret>
+  claude.ai / ChatGPT custom connectors, any official MCP client
+```
+
+The store of record moved to the Tokyo VPS on 2026-08-12 so queries work with the PC off;
+the Windows-side service remains a development instance. The VPS drain timer is the only
+drain client (single-drainer rule — see [../deploy/tokyo/README.md](../deploy/tokyo/README.md)).
+
+The Android bridge (BlueXlink receiver + LAN HTTP listener) remains in the tree as a fallback and diagnostic layer, but it is no longer on the primary path: BlueXlink is closed as unsupported/credential-blocked on `WA2456C` (see [RESEARCH.md](RESEARCH.md) 2026-08-12), and the LAN listener matters only if the relay route fails the `net probe` gate.
+
+The watch and Android components are private sideloaded applications. The health service is local-first and binds to loopback by default. It may bind to one exact Tailscale address only when a bearer token is configured. The MCP is an independent process and does not modify the existing Akari Surface Desktop MCP.
+
+## Watch collection
+
+The watch declares the official health and step-counter features and permissions and invokes the official APIs directly. Each callback becomes one immutable event with a stable ID, producer timestamp, source API, status, and optional raw error. A `PASS` event must contain a real value. Failure and empty states have no invented zero.
+
+Heart-rate subscription callbacks preserve both their callback timestamp and the elapsed time since the preceding callback. Recent/history results preserve the device sample timestamp when the API supplies one. The watch queue keeps unsent events across retries and deletes only an acknowledged prefix.
+
+The watch's local start/stop control governs its live heart-rate subscription. MCP-created sessions are also useful when a watch-side session ID is absent: the backend associates heart-rate events with a matching session and source-device time window and exposes `session_assignment: TIME_WINDOW`.
+
+## Watch egress transport
+
+### Primary: HTTPS to the Cloudflare relay
+
+The watch HTTP adapter POSTs the unchanged batch contract to `https://pulse.yoru-and-akari.dev/v1/health/batches` with `X-Akari-Bridge-Token`. The relay validates the entire batch with the same rules as the local service, stores it in D1 before acknowledging, and answers with the exact acknowledgement shape the watch verifies: 2xx, `ok === true`, matching `batch_id`, and non-negative `accepted`/`duplicates` summing to the submitted event count. Anything else keeps the events queued on the watch.
+
+The relay is a buffer, not a store of record. `scripts/drain-relay.mjs` pulls pending batches with a separate admin token, re-POSTs each unchanged payload to the local service's existing `/v1/health/batches` route, and deletes a relay row only after the local service acknowledged that exact batch. Event-level dedup stays where it always was, in the local service. Relay routes, semantics, and deploy steps are in [../relay/README.md](../relay/README.md).
+
+This route depends on one real-device fact confirmed on 2026-08-12: a sideloaded quick app's `@blueos.network.fetch` receives internet access through the paired phone. The `0.1.3` `net probe` proved it (relay HTTPS 200, ~4 s TLS), and a controlled `0.1.4` attribution experiment isolated the mechanism: with only the phone paired, fetch succeeded in 3 s; with only the PC Bluetooth link active (no phone), it failed instantly (`code=-6`). The internet path runs through the paired phone's vivo Health Bluetooth proxy.
+
+### Closed: official BlueXlink pair
+
+The BlueXlink pair (`@blueos.bluexlink.connectionManager` on the watch, `device-rpc.aar` on Android) was the original production candidate. On `WA2456C` it fails at connection time with `onError code=1001 "interconnectfeature error"` after `instance()` returns; the official support table lists only vivo WATCH 3, the official meaning of `1001` ("phone APP not installed") equally matches the missing vivo `appid`/`encryStr` registration, and neither blocker is fixable within this project. The full evidence and classification are in [RESEARCH.md](RESEARCH.md) and [REAL_DEVICE_RESULTS.md](REAL_DEVICE_RESULTS.md). The watch keeps the `transport init` diagnostic and the Android receiver code remains buildable, but no further work targets this channel.
+
+### Fallback: Android LAN HTTP listener
+
+The Android HTTP receiver is a user-started foreground diagnostic service accepting the same batch contract with a separate bridge token, committing before responding. It becomes relevant only if `net probe` proves that the watch has no internet path; a simulator request to a LAN IP or an OrbitV-local path is still not promoted to an end-to-end `PASS`.
+
+## Android durability
+
+Android has two independent boundaries:
+
+1. receiver transaction: validate the outer message and every event, detect stable-ID conflicts, write accepted records and queue state atomically, then acknowledge;
+2. uplink transaction: send a stable batch to Akari Health, verify the matching response and total count, then mark only those records uploaded.
+
+WorkManager retries transient uplink failure with backoff. A batch/event ID conflict is terminal and remains visible for investigation. Bridge settings keep service and bridge tokens in Android Keystore-backed encrypted storage; source files and diagnostics do not print them.
+
+## Service durability and queries
+
+The Node.js service uses `node:sqlite` in WAL mode for file-backed databases. `health_records` and `sync_batches` are append-only through the HTTP API. Batch and event IDs are idempotent only for identical payloads; reusing an ID for different content returns `409` without choosing either interpretation.
+
+The service also owns mutable session metadata and immutable correlation events. Session summaries calculate descriptive baseline, peak, delta, latency-to-rise, and time-to-peak only when real samples cover the relevant windows. Every summary states that temporal association does not establish causality.
+
+## MCP boundary
+
+The stdio MCP calls the authenticated service rather than opening SQLite. It exposes read-only health tools plus two non-destructive session-metadata writes. Raw samples cannot be updated or deleted through MCP. Standard output is reserved for JSON-RPC; process diagnostics use standard error.
+
+`health_steps` prefers the official `step_count` daily statistic. When only the live sensor is available, it returns `step_count_sensor` as a maximum observed cumulative-since-boot value and explicitly refuses to call it a calendar-day total. Sleep, SpO2, and stress tools include non-`PASS` diagnostic records so `DENIED`, `UNSUPPORTED`, and `API_MISSING` are not hidden as empty data.
+
+## Status and diagnostic model
+
+All producers use one status vocabulary:
+
+| Status | Meaning |
+|---|---|
+| `PASS` | a real operation/value succeeded; value-bearing observations contain `value` |
+| `NO_DATA` | the operation succeeded but returned no observation |
+| `DENIED` | permission or policy denied access |
+| `UNSUPPORTED` | the runtime/device explicitly lacks the capability |
+| `API_MISSING` | the expected module, function, configuration, or credential is absent |
+| `ERROR` | another explicit failure; raw code/message are retained |
+
+Layer diagnostics are independent: `watch_module_api`, `permission`, `sample_acquisition`, `watch_transport`, `phone_receive`, `phone_persistence`, `uplink`, `backend_ingest`, `database`, and `mcp_query`. A later healthy layer never overwrites an earlier failure.
+
+## Security and privacy
+
+- Non-loopback service binding is refused without a bearer token.
+- The Tailscale script binds the exact current tailnet IPv4 and does not change Tailscale, Serve/Funnel, grants, or Windows Firewall state.
+- The HTTP watch probe has a separate bridge token.
+- No vivo account token, MAC address, serial number, cookie, developer SDK key, or private signing key is committed or logged.
+- `/healthz` is unauthenticated but contains liveness only; all data/status routes honor configured authentication.
+- Health records have no update/delete route.
+
+## Acceptance boundary
+
+A valid `.rpk` and `.apk` prove host-side buildability and packaging only. They do not prove health permission, BlueXlink support, background behavior, or successful sideload on `WA2456C / BlueOS 3.0 / DPD2346C_A_1.54.5` and the vivo X200 Pro. Those results remain in `REAL_DEVICE_RESULTS.md` until observed on the named devices.

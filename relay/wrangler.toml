@@ -1,0 +1,17 @@
+name = "akari-pulse-relay"
+main = "src/worker.js"
+compatibility_date = "2026-08-01"
+workers_dev = false
+
+routes = [
+  { pattern = "pulse.example.com", custom_domain = true }
+]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "akari-pulse-relay"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+# Secrets (set via `wrangler secret put`, never committed):
+#   INGEST_TOKEN  - watch sends it as X-Akari-Bridge-Token on POST /v1/health/batches
+#   ADMIN_TOKEN   - drain client sends it as Authorization: Bearer on /v1/relay/* routes

@@ -1,0 +1,15 @@
+[Unit]
+Description=Akari Health service (store of record)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/akari-pulse/server
+EnvironmentFile=/home/ubuntu/akari-pulse/.env
+ExecStart=/opt/node24/bin/node src/index.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

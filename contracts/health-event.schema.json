@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://akari.local/schemas/health-event.schema.json",
+  "title": "Akari Pulse health event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "timestamp",
+    "metric",
+    "source_device",
+    "status"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "timestamp": {
+      "description": "Unix epoch milliseconds measured by the producing device.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "sample_timestamp": {
+      "description": "Optional timestamp supplied by the health API when it differs from callback time.",
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "metric": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "value": {
+      "description": "Absent on failures. May be a non-null scalar or structured value for sleep stages and similar records.",
+      "not": { "type": "null" }
+    },
+    "unit": {
+      "type": ["string", "null"],
+      "maxLength": 32
+    },
+    "source_device": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "source_module": {
+      "type": ["string", "null"],
+      "maxLength": 128
+    },
+    "source_api": {
+      "type": ["string", "null"],
+      "maxLength": 128
+    },
+    "quality": {
+      "type": ["string", "null"],
+      "maxLength": 64
+    },
+    "status": {
+      "enum": [
+        "PASS",
+        "NO_DATA",
+        "DENIED",
+        "UNSUPPORTED",
+        "API_MISSING",
+        "ERROR"
+      ]
+    },
+    "session_id": {
+      "type": ["string", "null"],
+      "maxLength": 128
+    },
+    "callback_delta_ms": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "raw_error_code": {
+      "type": ["string", "number", "null"]
+    },
+    "raw_error_message": {
+      "type": ["string", "null"],
+      "maxLength": 2048
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": { "const": "PASS" }
+        }
+      },
+      "then": {
+        "required": ["value"],
+        "properties": {
+          "value": { "not": { "type": "null" } }
+        }
+      }
+    }
+  ]
+}

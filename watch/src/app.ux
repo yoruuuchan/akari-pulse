@@ -1,0 +1,7 @@
+<script>
+  export default {
+    onCreate() {
+      console.info('[akari pulse] app created')
+    },
+  }
+</script>
