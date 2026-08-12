@@ -9,7 +9,7 @@
           </div>
           <div class="brand-copy">
             <text class="title">akari pulse</text>
-            <text class="eyebrow">0.1.4 · wa2456c collect</text>
+            <text class="eyebrow">0.1.5 · wa2456c evidence</text>
           </div>
         </div>
         <text class="hero-copy">one test per cold launch · no startup native calls</text>
@@ -91,8 +91,9 @@
         </div>
         <div class="button-row">
           <input type="button" class="button button-primary button-half" value="collect stats" @click="runCollectStats" />
+          <input type="button" class="button button-primary button-half button-last" value="probe sleep" @click="runProbeSleep" />
         </div>
-        <text class="warning-copy">hr live runs a 60 s window; watch_transport pass rides the next sync after the first ack</text>
+        <text class="warning-copy">stats logs raw payload for every call; sleep probes recent + ranged apis for evidence</text>
       </div>
     </list-item>
 
@@ -283,6 +284,11 @@
       collectRuns.runCollectStats()
     },
 
+    runProbeSleep() {
+      if (!this.lockTest('probe sleep')) return
+      collectRuns.runProbeSleep()
+    },
+
     runTransportControl() {
       if (!this.lockTest('transport init')) return
       this.lastStage = 'begin transport instance'
@@ -371,6 +377,10 @@
           )
         } else if (message.stage === 'BEGIN') {
           this.addLog(`BEGIN ${message.label}`)
+        } else if (message.note) {
+          // Surface raw evidence (e.g. getTodayStatistic success payloads) on
+          // the on-screen log so one on-device run yields readable evidence.
+          this.addLog(`${message.stage} ${message.label} raw=${message.note}`)
         } else {
           this.addLog(`${message.stage} ${message.label}`)
         }

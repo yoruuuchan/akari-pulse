@@ -298,6 +298,148 @@ test("invalid PASS observations are rejected instead of becoming zero", async ()
   });
 });
 
+test("bpm-family value 0 is excluded from PASS reads but preserved under ALL", async () => {
+  await withService(async ({ request, fixedNow }) => {
+    // Real store contents include a legacy zero-shape PASS record (from 0.1.2 era)
+    // plus fresh nonzero readings. The zero must never surface as a legal
+    // observation in latest/range/today (the routes MCP consumes), but it must
+    // remain visible under status=ALL and countable in diagnostics.
+    const batch = {
+      batch_id: "bpm-zero-guard-batch",
+      producer: "test",
+      events: [
+        {
+          event_id: "hr-legacy-zero",
+          timestamp: fixedNow - 60_000,
+          metric: "heart_rate",
+          value: 0,
+          unit: "bpm",
+          source_device: "WA2456C",
+          status: "PASS",
+        },
+        {
+          event_id: "hr-real",
+          timestamp: fixedNow - 30_000,
+          metric: "heart_rate",
+          value: 72,
+          unit: "bpm",
+          source_device: "WA2456C",
+          status: "PASS",
+        },
+        {
+          event_id: "hr-today-min-sentinel",
+          timestamp: fixedNow - 10_000,
+          metric: "heart_rate_today_min",
+          value: 0,
+          unit: "bpm",
+          source_device: "WA2456C",
+          status: "PASS",
+        },
+        {
+          event_id: "hr-today-max-real",
+          timestamp: fixedNow - 10_000,
+          metric: "heart_rate_today_max",
+          value: 178,
+          unit: "bpm",
+          source_device: "WA2456C",
+          status: "PASS",
+        },
+      ],
+    };
+    const ingest = await request("/v1/health/batches", {
+      method: "POST",
+      body: JSON.stringify(batch),
+    });
+    assert.equal(ingest.response.status, 202);
+    assert.equal(ingest.body.data.accepted, 4);
+
+    // Default PASS filter: only the nonzero HR record surfaces for heart_rate.
+    const latestHr = await request("/v1/health/latest?metric=heart_rate");
+    assert.equal(latestHr.body.status, "PASS");
+    assert.equal(latestHr.body.data.records.length, 1);
+    assert.equal(latestHr.body.data.records[0].value, 72);
+
+    // heart_rate_today_min with value 0 is excluded entirely under PASS.
+    const latestMin = await request("/v1/health/latest?metric=heart_rate_today_min");
+    assert.equal(latestMin.body.status, "NO_DATA");
+    assert.equal(latestMin.body.data.records.length, 0);
+
+    // heart_rate_today_max nonzero remains legal.
+    const latestMax = await request("/v1/health/latest?metric=heart_rate_today_max");
+    assert.equal(latestMax.body.status, "PASS");
+    assert.equal(latestMax.body.data.records[0].value, 178);
+
+    // Range query is filtered the same way.
+    const rangeHr = await request(`/v1/health/range?metric=heart_rate&from=0&to=${fixedNow + 1}`);
+    assert.equal(rangeHr.body.data.records.length, 1);
+    assert.equal(rangeHr.body.data.records[0].value, 72);
+
+    // Under status=ALL the raw zero records remain visible for diagnostics.
+    const rangeAll = await request(
+      `/v1/health/range?metrics=heart_rate,heart_rate_today_min&from=0&to=${fixedNow + 1}&status=ALL`,
+    );
+    const returnedIds = rangeAll.body.data.records.map((record) => record.event_id).sort();
+    assert.deepEqual(returnedIds, [
+      "hr-legacy-zero",
+      "hr-real",
+      "hr-today-min-sentinel",
+    ]);
+
+    // record_count still counts every stored record (append-only store untouched).
+    const status = await request("/v1/status");
+    assert.equal(status.body.data.database.record_count, 4);
+  });
+});
+
+test("bridge-only layers report NOT_APPLICABLE on the relay-only path", async () => {
+  await withService(async ({ request }) => {
+    const status = await request("/v1/status");
+    const layers = status.body.data.layers;
+    for (const bridgeLayer of ["phone_receive", "phone_persistence", "uplink"]) {
+      assert.equal(
+        layers[bridgeLayer].status,
+        "NOT_APPLICABLE",
+        `${bridgeLayer} should be NOT_APPLICABLE when no bridge records exist`,
+      );
+      assert.equal(layers[bridgeLayer].note, "android bridge fallback; not on the active relay route");
+    }
+    // Non-bridge layer without evidence remains NO_DATA (not NOT_APPLICABLE).
+    assert.equal(layers.watch_module_api.status, "NO_DATA");
+  });
+});
+
+test("a real diagnostic record for a bridge-only layer wins over NOT_APPLICABLE", async () => {
+  await withService(async ({ request, fixedNow }) => {
+    const batch = {
+      batch_id: "bridge-diag-batch",
+      producer: "android-bridge-test",
+      events: [
+        {
+          event_id: "bridge-uplink-pass",
+          timestamp: fixedNow - 5_000,
+          metric: "diagnostic_uplink",
+          value: "observed",
+          source_device: "vivo-x200-pro",
+          status: "PASS",
+        },
+      ],
+    };
+    const ingest = await request("/v1/health/batches", {
+      method: "POST",
+      body: JSON.stringify(batch),
+    });
+    assert.equal(ingest.response.status, 202);
+
+    const status = await request("/v1/status");
+    const layers = status.body.data.layers;
+    assert.equal(layers.uplink.status, "PASS");
+    assert.equal(layers.uplink.source_device, "vivo-x200-pro");
+    // Other bridge-only layers still have no records → NOT_APPLICABLE.
+    assert.equal(layers.phone_receive.status, "NOT_APPLICABLE");
+    assert.equal(layers.phone_persistence.status, "NOT_APPLICABLE");
+  });
+});
+
 test("JSON ingress accepts parameters but rejects media-type prefixes", async () => {
   await withService(async ({ request }) => {
     const body = JSON.stringify({ source_device: "WA2456C" });

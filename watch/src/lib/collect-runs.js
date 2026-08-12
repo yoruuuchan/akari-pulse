@@ -6,6 +6,16 @@ import { errorText, statusForFailure, isZeroHrSampleShape } from './events'
 const HEALTH_MODULE = '@blueos.health.health'
 const LIVE_WINDOW_MS = 60000
 const MAX_LIVE_PASS_EVENTS = 5
+const RAW_PAYLOAD_LIMIT = 1500
+
+// Bpm-family stat metrics: getTodayStatistic MAX/MIN for HEART_RATE returned
+// 0 bpm on WA2456C when the device aggregate included non-wear/empty periods
+// (2026-08-12 evidence). 0 bpm is physiologically impossible and is a
+// sentinel/aggregate artifact. Parse-time contract (0.1.5): a HEART_RATE-family
+// statistic result with value === 0 becomes NO_DATA with raw_error_code
+// ZERO_SENTINEL and the raw payload preserved in raw_error_message. Applies
+// ONLY to bpm-family metrics; step/distance/calorie zeros remain valid.
+const BPM_STAT_METRICS = ['heart_rate_today_max', 'heart_rate_today_min']
 
 let observer = null
 let activeTest = ''
@@ -157,6 +167,55 @@ function statisticType(name) {
 
 function validTimestamp(value) {
   return typeof value === 'number' && isFinite(value) && value > 0 ? Math.floor(value) : undefined
+}
+
+// Serialize a raw success payload for on-device evidence. Truncates to
+// RAW_PAYLOAD_LIMIT so the event still passes server validation (raw_error_message
+// max 2048). Failures reduce to a short type/error string rather than throwing.
+function stringifyRawPayload(payload) {
+  let text
+  try {
+    text = JSON.stringify(payload)
+  } catch (error) {
+    text = 'JSON.stringify failed: ' + errorText(error)
+  }
+  if (typeof text !== 'string') text = String(payload)
+  if (text.length > RAW_PAYLOAD_LIMIT) {
+    text = text.slice(0, RAW_PAYLOAD_LIMIT) + '...[truncated]'
+  }
+  return text
+}
+
+function isBpmStatMetric(metric) {
+  for (let index = 0; index < BPM_STAT_METRICS.length; index += 1) {
+    if (BPM_STAT_METRICS[index] === metric) return true
+  }
+  return false
+}
+
+// Build a per-metric breakdown message for the sample_acquisition layer diag,
+// e.g. "PASS: hr_today_max, hr_today_min; NO_DATA: step_count, distance,
+// calories, standing, intensity_sport". Longer than "3 PASS of 4" but still
+// well under raw_error_message's 2048 limit. Groups are omitted when empty.
+function perMetricBreakdown(results, extraNote) {
+  const groups = {}
+  const order = []
+  for (let index = 0; index < results.length; index += 1) {
+    const r = results[index]
+    if (!groups[r.status]) {
+      groups[r.status] = []
+      order.push(r.status)
+    }
+    groups[r.status].push(r.metric)
+  }
+  const parts = []
+  for (let index = 0; index < order.length; index += 1) {
+    const status = order[index]
+    parts.push(status + ': ' + groups[status].join(', '))
+  }
+  let text = parts.join('; ')
+  if (extraNote) text = text + ' (' + extraNote + ')'
+  return text
 }
 
 export function setObserver(onMessage) {
@@ -437,15 +496,13 @@ export function runCollectRecents() {
     }
 
     if (anyPass) {
-      let passCount = 0
-      for (let index = 0; index < results.length; index += 1) if (results[index].status === 'PASS') passCount += 1
       enqueueLayerDiag(
         test,
         'sample_acquisition',
         'PASS',
         'health.getRecentSamples',
         'RECENT_SAMPLES',
-        `${passCount} PASS of ${results.length}`
+        perMetricBreakdown(results)
       )
     } else if (anyNoData && !firstError) {
       enqueueLayerDiag(
@@ -454,7 +511,7 @@ export function runCollectRecents() {
         'NO_DATA',
         'health.getRecentSamples',
         'RECENT_ALL_NO_DATA',
-        'all recents returned empty or zero-shape'
+        perMetricBreakdown(results, 'all recents returned empty or zero-shape')
       )
     } else if (firstError) {
       enqueueLayerDiag(
@@ -690,15 +747,13 @@ export function runCollectStats() {
     }
 
     if (anyPass) {
-      let passCount = 0
-      for (let index = 0; index < results.length; index += 1) if (results[index].status === 'PASS') passCount += 1
       enqueueLayerDiag(
         test,
         'sample_acquisition',
         'PASS',
         'health.getTodayStatistic',
         'TODAY_STATS',
-        `${passCount} PASS of ${results.length}`
+        perMetricBreakdown(results, 'SUM stats device boundary if empty')
       )
     } else if (anyNoData && !firstError) {
       enqueueLayerDiag(
@@ -707,7 +762,7 @@ export function runCollectStats() {
         'NO_DATA',
         'health.getTodayStatistic',
         'STATS_ALL_NO_DATA',
-        'all daily statistics returned empty'
+        perMetricBreakdown(results, 'all daily statistics returned empty')
       )
     } else if (firstError) {
       enqueueLayerDiag(
@@ -766,6 +821,14 @@ export function runCollectStats() {
         dataType: type,
         statisticType: statistic,
         success: function (result) {
+          // Log the RAW success payload for every statistic call so one on-device
+          // run yields conclusive evidence of the actual result shape. The
+          // 2026-08-12 empty-SUM observation had no raw payload dump; 0.1.5
+          // fixes that by preserving the raw payload on every stat event
+          // (PASS, NO_DATA, and ZERO_SENTINEL alike).
+          const rawPayload = stringifyRawPayload(result)
+          const stageBase = `${descriptor.type}_${descriptor.statistic}`
+
           if (!result || result.value === undefined || result.value === null) {
             const input = {
               metric: descriptor.metric,
@@ -774,9 +837,33 @@ export function runCollectStats() {
               source_module: HEALTH_MODULE,
               source_api: 'health.getTodayStatistic',
               quality: `today_${descriptor.statistic.toLowerCase()}_collect_empty`,
+              raw_error_code: 'EMPTY_STAT_RESULT',
+              raw_error_message: 'raw=' + rawPayload,
             }
             queue.enqueue(input)
-            emitStage(test, label, `${descriptor.type}_${descriptor.statistic}_NO_DATA`, 'NO_DATA')
+            emitStage(test, label, `${stageBase}_NO_DATA`, 'NO_DATA', { note: rawPayload })
+            results.push({ metric: descriptor.metric, status: 'NO_DATA' })
+            runOne(index + 1)
+            return
+          }
+
+          // Bpm-family statistic value === 0 is the sentinel/aggregate artifact:
+          // 0 bpm is physiologically impossible, and getTodayStatistic MIN for
+          // HEART_RATE includes non-wear windows on WA2456C. Map to NO_DATA
+          // with ZERO_SENTINEL and preserve the raw payload as evidence.
+          if (isBpmStatMetric(descriptor.metric) && result.value === 0) {
+            const input = {
+              metric: descriptor.metric,
+              unit: descriptor.unit,
+              status: 'NO_DATA',
+              source_module: HEALTH_MODULE,
+              source_api: 'health.getTodayStatistic',
+              quality: `today_${descriptor.statistic.toLowerCase()}_collect_zero_sentinel`,
+              raw_error_code: 'ZERO_SENTINEL',
+              raw_error_message: 'bpm-family stat value=0 (non-wear/empty aggregate); raw=' + rawPayload,
+            }
+            queue.enqueue(input)
+            emitStage(test, label, `${stageBase}_ZERO_SENTINEL`, 'NO_DATA', { note: rawPayload })
             results.push({ metric: descriptor.metric, status: 'NO_DATA' })
             runOne(index + 1)
             return
@@ -793,8 +880,9 @@ export function runCollectStats() {
             quality: `today_${descriptor.statistic.toLowerCase()}_collect`,
           }
           queue.enqueue(input)
-          emitStage(test, label, `${descriptor.type}_${descriptor.statistic}_PASS`, 'PASS', {
+          emitStage(test, label, `${stageBase}_PASS`, 'PASS', {
             value: result.value,
+            note: rawPayload,
           })
           results.push({ metric: descriptor.metric, status: 'PASS', value: result.value })
           runOne(index + 1)
@@ -833,6 +921,359 @@ export function runCollectStats() {
       }
       queue.enqueue(input)
       emitFailure(test, label, `${descriptor.type}_${descriptor.statistic}_THROWN`, error, 'CALL_THROWN')
+      results.push({ metric: descriptor.metric, status: 'ERROR', code: 'CALL_THROWN', message: rawMessage })
+      runOne(index + 1)
+    }
+  }
+
+  runOne(0)
+}
+
+// ---- Button 4: probe sleep ---------------------------------------------------
+// Real-device evidence for the sleep API surface on WA2456C. Per official docs
+// (docs/RESEARCH.md), SLEEP_STATUS is supported (0 awake, 1 sleeping) but
+// SLEEP_UNIT and SLEEP_STAGES are marked "temporarily unsupported" on this
+// device class. 0.1.5 records that on device with raw-payload evidence so the
+// MCP health_sleep tool's UNSUPPORTED semantics are grounded in real observed
+// results, not documentation alone. Also probes health.getStatistic (the
+// ranged API exposed in the language-server feature list) over a last-night
+// window (yesterday 18:00 -> today noon device-local) if the function exists.
+const SLEEP_PROBES = [
+  { type: 'SLEEP_STATUS', metric: 'sleep_status', unit: 'state' },
+  { type: 'SLEEP_UNIT', metric: 'sleep_unit', unit: '' },
+  { type: 'SLEEP_STAGES', metric: 'sleep_stages', unit: '' },
+]
+
+function lastNightWindow(now) {
+  // Device-local last-night window: yesterday 18:00 -> today 12:00. Use the
+  // local timezone offset from Date so it matches the watch clock. The window
+  // is intentionally generous to cover typical sleep with buffer.
+  const nowDate = new Date(now)
+  const yesterday18 = new Date(
+    nowDate.getFullYear(),
+    nowDate.getMonth(),
+    nowDate.getDate() - 1,
+    18,
+    0,
+    0,
+    0
+  )
+  const today12 = new Date(
+    nowDate.getFullYear(),
+    nowDate.getMonth(),
+    nowDate.getDate(),
+    12,
+    0,
+    0,
+    0
+  )
+  return { startTime: yesterday18.getTime(), endTime: today12.getTime() }
+}
+
+export function runProbeSleep() {
+  const test = 'probe_sleep'
+  const label = 'probe sleep'
+  if (!begin(test, label)) return
+  if (!ensureQueueLoaded(test, label)) {
+    finishRun(test)
+    return
+  }
+
+  const recentReady = healthReady('getRecentSamples')
+  const rangedReady = health && typeof health.getStatistic === 'function'
+  if (!recentReady && !rangedReady) {
+    enqueueLayerDiag(
+      test,
+      'watch_module_api',
+      'API_MISSING',
+      'health.getRecentSamples/health.getStatistic',
+      'API_MISSING',
+      'no sleep-readable API available'
+    )
+    emitFailure(
+      test,
+      label,
+      'API_MISSING',
+      'health.getRecentSamples and health.getStatistic both unavailable',
+      'API_MISSING',
+      'API_MISSING'
+    )
+    initTransportForRun(test, label, function () {
+      finishRun(test)
+    })
+    transport.syncNow()
+    return
+  }
+  enqueueLayerDiag(
+    test,
+    'watch_module_api',
+    'PASS',
+    recentReady && rangedReady
+      ? 'health.getRecentSamples+health.getStatistic'
+      : recentReady
+      ? 'health.getRecentSamples'
+      : 'health.getStatistic'
+  )
+
+  const results = []
+
+  function finalize() {
+    let anyPass = false
+    let anyNoData = false
+    let anyUnsupported = false
+    let firstDenied = null
+    let firstError = null
+    for (let index = 0; index < results.length; index += 1) {
+      const r = results[index]
+      if (r.status === 'PASS') anyPass = true
+      else if (r.status === 'NO_DATA') anyNoData = true
+      else if (r.status === 'UNSUPPORTED') anyUnsupported = true
+      else if (r.status === 'DENIED' && !firstDenied) firstDenied = r
+      else if (!firstError && (r.status === 'ERROR' || r.status === 'API_MISSING')) firstError = r
+    }
+
+    if (firstDenied) {
+      enqueueLayerDiag(
+        test,
+        'permission',
+        'DENIED',
+        'health.getRecentSamples',
+        firstDenied.code,
+        firstDenied.message
+      )
+    } else {
+      enqueueLayerDiag(test, 'permission', 'PASS', 'health.getRecentSamples')
+    }
+
+    let sampleStatus = 'NO_DATA'
+    if (anyPass) sampleStatus = 'PASS'
+    else if (firstError) sampleStatus = firstError.status
+    else if (anyUnsupported && !anyNoData) sampleStatus = 'UNSUPPORTED'
+    enqueueLayerDiag(
+      test,
+      'sample_acquisition',
+      sampleStatus,
+      'health.getRecentSamples/getStatistic',
+      'SLEEP_PROBES',
+      perMetricBreakdown(results, 'sleep API device boundary')
+    )
+
+    initTransportForRun(test, label, function () {
+      finishRun(test)
+    })
+    transport.syncNow()
+  }
+
+  function runRangedProbe(afterDone) {
+    if (!rangedReady) {
+      afterDone()
+      return
+    }
+    const statusType = dataType('SLEEP_STATUS')
+    if (statusType === undefined || statusType === null) {
+      const input = {
+        metric: 'sleep_status_ranged',
+        status: 'API_MISSING',
+        source_module: HEALTH_MODULE,
+        source_api: 'health.getStatistic',
+        quality: 'sleep_ranged_probe',
+        raw_error_code: 'API_MISSING',
+        raw_error_message: 'DATA_TYPES.SLEEP_STATUS unavailable for ranged probe',
+      }
+      queue.enqueue(input)
+      results.push({ metric: 'sleep_status_ranged', status: 'API_MISSING', code: 'API_MISSING' })
+      afterDone()
+      return
+    }
+    const range = lastNightWindow(Date.now())
+    const sumStatistic = statisticType('SUM')
+    emitStage(test, label, 'BEGIN_SLEEP_STATUS_RANGED', 'RUNNING', {
+      note: 'startTime=' + range.startTime + ' endTime=' + range.endTime,
+    })
+    try {
+      const call = {
+        dataType: statusType,
+        startTime: range.startTime,
+        endTime: range.endTime,
+        success: function (result) {
+          const rawPayload = stringifyRawPayload(result)
+          const hasValue = result && result.value !== undefined && result.value !== null
+          const input = {
+            metric: 'sleep_status_ranged',
+            status: hasValue ? 'PASS' : 'NO_DATA',
+            source_module: HEALTH_MODULE,
+            source_api: 'health.getStatistic',
+            quality: 'sleep_ranged_probe',
+          }
+          if (hasValue) {
+            input.value = result.value
+            input.sample_timestamp = validTimestamp(result.endTime)
+          } else {
+            input.raw_error_code = 'EMPTY_RANGED_RESULT'
+            input.raw_error_message =
+              'window=' + range.startTime + '-' + range.endTime + '; raw=' + rawPayload
+          }
+          queue.enqueue(input)
+          emitStage(test, label, 'SLEEP_STATUS_RANGED_' + (hasValue ? 'PASS' : 'NO_DATA'), hasValue ? 'PASS' : 'NO_DATA', { note: rawPayload })
+          results.push({ metric: 'sleep_status_ranged', status: hasValue ? 'PASS' : 'NO_DATA', value: hasValue ? result.value : undefined })
+          afterDone()
+        },
+        fail: function (data, code) {
+          const rawCode = code === undefined || code === null ? 'UNKNOWN' : code
+          const rawMessage = errorText(data)
+          const status = statusForFailure(rawCode)
+          const input = {
+            metric: 'sleep_status_ranged',
+            status: status,
+            source_module: HEALTH_MODULE,
+            source_api: 'health.getStatistic',
+            quality: 'sleep_ranged_probe',
+            raw_error_code: rawCode,
+            raw_error_message: rawMessage,
+          }
+          queue.enqueue(input)
+          emitFailure(test, label, 'SLEEP_STATUS_RANGED_FAIL', data, rawCode, status)
+          results.push({ metric: 'sleep_status_ranged', status: status, code: rawCode, message: rawMessage })
+          afterDone()
+        },
+      }
+      // Include statisticType when the enum exposes SUM. If getStatistic rejects
+      // for this combination, the fail callback records the raw device error
+      // (that's the evidence we want).
+      if (sumStatistic !== undefined && sumStatistic !== null) call.statisticType = sumStatistic
+      health.getStatistic(call)
+    } catch (error) {
+      const rawMessage = errorText(error)
+      const input = {
+        metric: 'sleep_status_ranged',
+        status: 'ERROR',
+        source_module: HEALTH_MODULE,
+        source_api: 'health.getStatistic',
+        quality: 'sleep_ranged_probe',
+        raw_error_code: 'CALL_THROWN',
+        raw_error_message: rawMessage,
+      }
+      queue.enqueue(input)
+      emitFailure(test, label, 'SLEEP_STATUS_RANGED_THROWN', error, 'CALL_THROWN')
+      results.push({ metric: 'sleep_status_ranged', status: 'ERROR', code: 'CALL_THROWN', message: rawMessage })
+      afterDone()
+    }
+  }
+
+  function runOne(index) {
+    if (index >= SLEEP_PROBES.length) {
+      runRangedProbe(finalize)
+      return
+    }
+    const descriptor = SLEEP_PROBES[index]
+    if (!recentReady) {
+      const input = {
+        metric: descriptor.metric,
+        unit: descriptor.unit,
+        status: 'API_MISSING',
+        source_module: HEALTH_MODULE,
+        source_api: 'health.getRecentSamples',
+        quality: 'sleep_recent_probe',
+        raw_error_code: 'API_MISSING',
+        raw_error_message: 'health.getRecentSamples unavailable',
+      }
+      queue.enqueue(input)
+      results.push({ metric: descriptor.metric, status: 'API_MISSING', code: 'API_MISSING' })
+      runOne(index + 1)
+      return
+    }
+    const type = dataType(descriptor.type)
+    if (type === undefined || type === null) {
+      const input = {
+        metric: descriptor.metric,
+        unit: descriptor.unit,
+        status: 'API_MISSING',
+        source_module: HEALTH_MODULE,
+        source_api: 'health.DATA_TYPES',
+        quality: 'sleep_recent_probe',
+        raw_error_code: 'API_MISSING',
+        raw_error_message: `DATA_TYPES.${descriptor.type} unavailable`,
+      }
+      queue.enqueue(input)
+      results.push({ metric: descriptor.metric, status: 'API_MISSING', code: 'API_MISSING' })
+      runOne(index + 1)
+      return
+    }
+
+    emitStage(test, label, `BEGIN_${descriptor.type}`, 'RUNNING')
+    try {
+      health.getRecentSamples({
+        dataTypes: [type],
+        success: function (samples) {
+          const rawPayload = stringifyRawPayload(samples)
+          let sample = null
+          if (Array.isArray(samples)) {
+            for (let i = 0; i < samples.length; i += 1) {
+              if (samples[i] && samples[i].dataType === type) {
+                sample = samples[i].data
+                break
+              }
+            }
+            if (!sample && samples.length === 1 && samples[0]) sample = samples[0].data
+          }
+          const hasValue = sample && sample.value !== undefined && sample.value !== null
+          const input = {
+            metric: descriptor.metric,
+            unit: descriptor.unit,
+            status: hasValue ? 'PASS' : 'NO_DATA',
+            source_module: HEALTH_MODULE,
+            source_api: 'health.getRecentSamples',
+            quality: 'sleep_recent_probe',
+          }
+          if (hasValue) {
+            input.value = sample.value
+            input.sample_timestamp = validTimestamp(sample.timeStamp)
+          } else {
+            input.raw_error_code = 'EMPTY_SLEEP_SAMPLE'
+            input.raw_error_message = 'raw=' + rawPayload
+          }
+          queue.enqueue(input)
+          emitStage(test, label, `${descriptor.type}_` + (hasValue ? 'PASS' : 'NO_DATA'), hasValue ? 'PASS' : 'NO_DATA', {
+            note: rawPayload,
+            value: hasValue ? sample.value : undefined,
+          })
+          results.push({ metric: descriptor.metric, status: hasValue ? 'PASS' : 'NO_DATA', value: hasValue ? sample.value : undefined })
+          runOne(index + 1)
+        },
+        fail: function (data, code) {
+          const rawCode = code === undefined || code === null ? 'UNKNOWN' : code
+          const rawMessage = errorText(data)
+          const status = statusForFailure(rawCode)
+          const input = {
+            metric: descriptor.metric,
+            unit: descriptor.unit,
+            status: status,
+            source_module: HEALTH_MODULE,
+            source_api: 'health.getRecentSamples',
+            quality: 'sleep_recent_probe',
+            raw_error_code: rawCode,
+            raw_error_message: rawMessage,
+          }
+          queue.enqueue(input)
+          emitFailure(test, label, `${descriptor.type}_FAIL`, data, rawCode, status)
+          results.push({ metric: descriptor.metric, status: status, code: rawCode, message: rawMessage })
+          runOne(index + 1)
+        },
+      })
+    } catch (error) {
+      const rawMessage = errorText(error)
+      const input = {
+        metric: descriptor.metric,
+        unit: descriptor.unit,
+        status: 'ERROR',
+        source_module: HEALTH_MODULE,
+        source_api: 'health.getRecentSamples',
+        quality: 'sleep_recent_probe',
+        raw_error_code: 'CALL_THROWN',
+        raw_error_message: rawMessage,
+      }
+      queue.enqueue(input)
+      emitFailure(test, label, `${descriptor.type}_THROWN`, error, 'CALL_THROWN')
       results.push({ metric: descriptor.metric, status: 'ERROR', code: 'CALL_THROWN', message: rawMessage })
       runOne(index + 1)
     }

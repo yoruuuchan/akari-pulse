@@ -14,6 +14,31 @@ const DIAGNOSTIC_LAYERS = [
   "uplink",
 ];
 
+// Layers that only ever produce records when the Android bridge is on the active
+// path. On the relay-only route they are structurally never populated. When
+// zero records exist for one of these layers, `/v1/status` reports NOT_APPLICABLE
+// with an explanatory note instead of the misleading NO_DATA. If a real record
+// ever arrives (the bridge is re-enabled), the real status takes over.
+const ANDROID_BRIDGE_ONLY_LAYERS = new Set(["phone_receive", "phone_persistence", "uplink"]);
+const ANDROID_BRIDGE_LAYER_NOTE =
+  "android bridge fallback; not on the active relay route";
+
+// Contract decision (0.1.5): the vivo watch health API can surface a raw value
+// of 0 bpm from bpm-family reads (recent-sample zero shape, or getTodayStatistic
+// MIN aggregating non-wear/empty periods). 0 bpm is physiologically impossible
+// and is a sentinel/aggregate artifact, not an observation. PASS-filtered reads
+// (latest/range/today — the routes the MCP consumes) exclude records whose
+// metric is in this set AND whose numeric_value === 0. Under status=ALL and
+// diagnostics the raw records remain fully visible. The append-only store is
+// untouched — this is a query-time validity rule.
+const BPM_METRICS_ZERO_INVALID = new Set([
+  "heart_rate",
+  "heart_rate_resting",
+  "heart_rate_today_max",
+  "heart_rate_today_min",
+]);
+const BPM_ZERO_INVALID_METRIC_LIST = Array.from(BPM_METRICS_ZERO_INVALID);
+
 function parseJson(text) {
   if (text === null || text === undefined) return null;
   return JSON.parse(text);
@@ -333,6 +358,14 @@ export class HealthDatabase {
       clauses.push("status = ?");
       parameters.push(status);
     }
+    // Query-time validity rule: under a PASS filter, exclude bpm-family records
+    // whose numeric value is 0. See BPM_METRICS_ZERO_INVALID above. The rule
+    // does not apply to status=ALL, other statuses, or diagnostics.
+    if (status === "PASS") {
+      const placeholders = BPM_ZERO_INVALID_METRIC_LIST.map(() => "?").join(",");
+      clauses.push(`NOT (metric IN (${placeholders}) AND numeric_value = 0)`);
+      parameters.push(...BPM_ZERO_INVALID_METRIC_LIST);
+    }
     parameters.push(limit);
     const order = ascending ? "ASC" : "DESC";
     const rows = this.db
@@ -356,6 +389,12 @@ export class HealthDatabase {
     if (status) {
       clauses.push("status = ?");
       parameters.push(status);
+    }
+    // Query-time validity rule: same as queryRange — see BPM_METRICS_ZERO_INVALID.
+    if (status === "PASS") {
+      const placeholders = BPM_ZERO_INVALID_METRIC_LIST.map(() => "?").join(",");
+      clauses.push(`NOT (metric IN (${placeholders}) AND numeric_value = 0)`);
+      parameters.push(...BPM_ZERO_INVALID_METRIC_LIST);
     }
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
     const rows = this.db
@@ -406,15 +445,26 @@ export class HealthDatabase {
     const layers = {};
     for (const layer of DIAGNOSTIC_LAYERS) {
       const record = diagnosticByMetric.get(`diagnostic_${layer}`);
-      layers[layer] = record
-        ? {
-            status: record.status,
-            timestamp: record.timestamp,
-            code: record.raw_error_code,
-            message: record.raw_error_message,
-            source_device: record.source_device,
-          }
-        : { status: "NO_DATA", timestamp: null };
+      if (record) {
+        layers[layer] = {
+          status: record.status,
+          timestamp: record.timestamp,
+          code: record.raw_error_code,
+          message: record.raw_error_message,
+          source_device: record.source_device,
+        };
+      } else if (ANDROID_BRIDGE_ONLY_LAYERS.has(layer)) {
+        // Zero records ever seen for this bridge-only layer — the relay-only
+        // route never produces them. Distinguish this structural absence from
+        // NO_DATA (which means "the producer ran but reported nothing").
+        layers[layer] = {
+          status: "NOT_APPLICABLE",
+          timestamp: null,
+          note: ANDROID_BRIDGE_LAYER_NOTE,
+        };
+      } else {
+        layers[layer] = { status: "NO_DATA", timestamp: null };
+      }
     }
     layers.backend_ingest = lastBatch
       ? { status: "PASS", timestamp: lastBatch.received_at_ms, batch_id: lastBatch.batch_id }
@@ -622,6 +672,7 @@ export class HealthDatabase {
         WHERE metric = 'heart_rate'
           AND status = 'PASS'
           AND numeric_value IS NOT NULL
+          AND numeric_value != 0
           AND source_device = ?
           AND timestamp_ms >= ?
           AND timestamp_ms <= ?

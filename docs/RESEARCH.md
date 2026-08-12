@@ -37,6 +37,14 @@ Conclusion: the sideloaded quick app's internet path runs exclusively through th
 
 Additionally, the `code=-6` immediate-rejection shape is now distinguished from `code=0` ~40 s timeout: `-6` means no network path exists at all (only a non-internet BT link is active); `0` with ~40 s delay means a route exists but the fetch stalls (e.g. endpoint unreachable).
 
+## 2026-08-12 late evening: SDK feature-list vs runtime probe verdict
+
+The BlueOS SDK's `featureApi.js` lists `getStatistic`, `subscribeTodayStatistic`, and `unsubscribeTodayStatistic` among the `@blueos.health.health` module's public symbols. On-device runtime probe on `WA2456C / DPD2346C_A_1.54.5` (0.1.5 `probe sleep` run) proved `health.getStatistic` absent — `typeof` returned no function. The ranged statistic call was skipped cleanly; no path to last-night sleep aggregates exists for a sideloaded quick app on this firmware.
+
+`getTodayStatistic` SUM types were conclusively determined to return a literal empty object `{}` in the success callback — the 0.1.4 "candidate: wrong field read" hypothesis is dead. On-screen photographic evidence from the 0.1.5 raw-payload dump confirms no fields exist. See [REAL_DEVICE_RESULTS.md](REAL_DEVICE_RESULTS.md) for the full acceptance results.
+
+Sleep capability verdict for sideloaded quick apps on WA2456C: SLEEP_STATUS (=13) available as an instantaneous awake/asleep flag via `getRecentSamples`; SLEEP_UNIT (=11) and SLEEP_STAGES (=12) refused with `code=200 "getRecentSamples failed"`; `health.getStatistic` absent, so no ranged sleep query possible. The earlier prediction (SLEEP_UNIT/SLEEP_STAGES unsupported on this device class) is now device-proven.
+
 ## 结论
 
 优先做官方 BlueXlink/device RPC 真机 gate，并保留 watch 通过[官方 `@blueos.network.fetch`](https://developers-watch.vivo.com.cn/api/system/fetch/)直连 Akari HTTPS 的上传基线。OrbitV/vbook 只作探测，不作生产协议；仅当 RPC 在 WA2456C 上明确不可用且必须双向控制时才做 custom BLE。[BlueXlink 概述](https://developers-watch.vivo.com.cn/api/connect/introduce/)目前只明确列 vivo WATCH3，未列第一代 WATCH GT；所以 WA2456C 的 RPC、健康权限、payload 上限、后台行为均保持 `UNKNOWN`，不能由“BlueOS 3.0”推断。

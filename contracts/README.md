@@ -105,7 +105,44 @@ The Android queue marks an event uploaded only after a matching successful ackno
 | `API_MISSING` | the expected module or function is absent |
 | `ERROR` | another explicit failure; retain raw code/message |
 
+The event-level `status` vocabulary is closed. Layer summaries in `/v1/status`
+may additionally report `NOT_APPLICABLE` for bridge-only layers when zero
+records exist for them (see the query rule below).
+
 Diagnostics use metrics named `diagnostic_<layer>`, including `diagnostic_watch_module_api`, `diagnostic_permission`, `diagnostic_sample_acquisition`, `diagnostic_watch_transport`, `diagnostic_phone_receive`, `diagnostic_phone_persistence`, and `diagnostic_uplink`.
+
+## Query validity rule: bpm-family value 0
+
+Contract decision (0.1.5, documented not silent): under a PASS filter, the
+Akari Health service excludes records whose metric is in
+`{heart_rate, heart_rate_resting, heart_rate_today_max, heart_rate_today_min}`
+AND whose numeric value is `0`. Rationale: 0 bpm is physiologically impossible
+and is a sentinel/aggregate artifact — a recent-sample zero shape
+(`value: 0, timeStamp: 0`) or a `getTodayStatistic` MIN aggregate that includes
+non-wear/empty windows on WA2456C.
+
+The rule is applied at the query layer only. Under `status=ALL` (and in the
+raw diagnostics, and in `/v1/status.database.counts_by_status`) these records
+remain fully visible. The append-only store is untouched — no record is
+mutated, replaced, or deleted. Legacy zero records from `0.1.2/0.1.3` still
+exist in the store; they just no longer surface through the routes the MCP
+consumes.
+
+The watch side (0.1.5) also refuses to accept these zeros as observations at
+parse time: recent-sample zero shape maps to `NO_DATA` with `raw_error_code:
+ZERO_SHAPE` (0.1.4 rule, retained), and `getTodayStatistic` MAX/MIN for
+HEART_RATE with `value === 0` maps to `NO_DATA` with `raw_error_code:
+ZERO_SENTINEL`, preserving the raw payload in `raw_error_message` as evidence.
+
+## Layer summary: `NOT_APPLICABLE`
+
+The `phone_receive`, `phone_persistence`, and `uplink` layers only ever
+produce diagnostic records when the Android bridge is on the active path.
+On the current relay-only route they are structurally never populated.
+`/v1/status.data.layers.<layer>` reports `NOT_APPLICABLE` (with an
+explanatory `note`) when zero records exist for such a layer, instead of the
+misleading `NO_DATA`. If a real record ever arrives (the bridge is re-enabled
+as a fallback receiver), the real status takes over from the next request.
 
 ## Timestamps
 

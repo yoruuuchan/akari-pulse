@@ -229,6 +229,41 @@ version:    versionCode 5 / versionName 0.1.4
 debug/min:  true / minPlatformVersion 1070
 ```
 
+The 0.1.5 evidence-and-boundary build on 2026-08-12 (same toolchain, clean `build/`, `dist/`, and `node_modules/.cache`) is copied to `../artifacts/akari-pulse-watch-debug-0.1.5.rpk`:
+
+```text
+size:       89,461 bytes
+SHA-256:    C8AFBE32446E30D745CBCFE68C8C7D5DA101B7B58DD78CCD52167C2D7343AE76
+package:    com.akaripulse.watch
+version:    versionCode 6 / versionName 0.1.5
+debug/min:  true / minPlatformVersion 1070
+```
+
+`0.1.5` keeps every `0.1.4` button unchanged and:
+
+- Tightens `collect stats`: the `getTodayStatistic` success handler records
+  the raw payload of every call (`JSON.stringify`, truncated to 1500 chars)
+  as `raw_error_message` on `NO_DATA`/`ZERO_SENTINEL` events, and always as
+  an on-screen `note` extra so one on-device run produces conclusive
+  evidence of the SUM result shape.
+- Adds the `ZERO_SENTINEL` rule for `heart_rate_today_max/min`: value 0
+  becomes `NO_DATA` with `raw_error_code: ZERO_SENTINEL` (0 bpm is
+  physiologically impossible; MIN aggregates include non-wear windows on
+  this firmware). Applies ONLY to bpm-family metrics; step/distance/calorie
+  zeros remain valid daily totals.
+- Changes the `sample_acquisition` layer diag to a per-metric breakdown
+  message (`"PASS: hr_today_max; NO_DATA: hr_today_min, step_count, ..."`)
+  instead of the previous `"N PASS of M"` summary.
+- Adds one new one-per-launch button `probe sleep` that runs
+  `getRecentSamples` for `SLEEP_STATUS`, `SLEEP_UNIT`, `SLEEP_STAGES` and,
+  if `health.getStatistic` exists at runtime, one ranged probe on
+  `SLEEP_STATUS` over a last-night device-local window
+  (yesterday 18:00 → today 12:00). Every call records its raw payload as
+  evidence.
+
+`0.1.5` was device-verified on 2026-08-12 — see
+`../docs/REAL_DEVICE_RESULTS.md` for the full acceptance results.
+
 The packaged manifest contains `appCategory: [sports]`, `debug: true`, compiler-derived `minPlatformVersion: 1070`, both `watch-square` and `watch-round`, the two required health/sensor permissions, and compiled feature aliases for health, sensor, storage, fetch, and interconnect. Independent audit verified the outer and nested ZIP CRCs, both Pair1 and Pair2 RSA signatures, both chunked content digests, certificate/public-key equality, all five outer resource digests, and all four nested `hash.json` resource digests. The automatic debug certificate is `CN=RPKDebug, O=RPK, C=CN`, SHA-256 `6D3E6A3DCBDADB0AA94F64E33A36B01254CB6EF7E14BE282D885CD95AEB952E0`.
 
 There is intentionally no `sign/` directory in this source. The official compiler's debug build created `META-INF/CERT` automatically. That is a tool-generated debug package signature, not production developer signing, not the Android APK fingerprint, and not evidence of store eligibility. A release build requires the owner's own certificate/private key generated through BlueOS Studio; do not commit `private.pem`. No upstream demo private key is used or delivered.

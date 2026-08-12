@@ -22,6 +22,7 @@ Do not include a MAC address, serial number, account identifier, token, SDK key,
 | `0.1.2` / code 3 | SHA-256 `D5A368469F556A379575178ACFA57530D35546D44742433788F13ED8EE0E98C6`; 69,649 bytes | Installed successfully. Isolated results below (operator-reported, recorded 2026-08-12): the complete health chain passed, including three consecutive cold-start full-pipeline passes, with no reboot. `transport init` failed with BlueXlink `code=1001`. |
 | `0.1.3` / code 4 | SHA-256 `BFCCEA5B7181BFE20C7B547EA05E5025DC7DE76703A98A60D75BF95D1328E0A1`; 75,466 bytes | Installed through OrbitV. `net probe` and `send batch https` both passed on 2026-08-12; the first real watch batch traversed relay → drain → local service → MCP the same day. Details below. |
 | `0.1.4` / code 5 | SHA-256 `AF16F9E39CEBB67AB79408B03668907CD40BBBFB6F6705599A9C8808FC63372B`; 84,899 bytes | Verified 2026-08-12 (operator-run, afternoon/evening UTC+8). All three collect+sync buttons passed end-to-end; real nonzero HR (62 bpm live, 61 bpm resting), SpO2 (99 %), stress (35) landed in the VPS store and are queryable via the remote MCP. Zero-shape → NO_DATA mapping confirmed on device. Daily SUM statistics identified as a device capability boundary (all returned empty). Details below. |
+| `0.1.5` / code 6 | SHA-256 `C8AFBE32446E30D745CBCFE68C8C7D5DA101B7B58DD78CCD52167C2D7343AE76`; 89,461 bytes | Verified 2026-08-12 (operator-run, evening UTC+8). Sentinel rule confirmed on device, SUM-stats conclusively empty-object, sleep boundaries established, NOT_APPLICABLE layer semantics live. Details below. |
 
 ## `0.1.2` isolated results (operator-reported, recorded 2026-08-12)
 
@@ -126,11 +127,89 @@ All seven goals of the 2026-08-12 evening round met:
 6. Store-then-forward durable queue behavior confirmed (frozen batch survived ~11.5 min and retried successfully).
 7. Daily SUM statistics identified as a device capability boundary with evidence.
 
+## `0.1.5` acceptance results (operator-run, 2026-08-12 evening UTC+8)
+
+Same discipline as prior versions: cold app launch before each row, one test per process. Phone paired, connected over Bluetooth, and online. Build sideloaded via OrbitV (versionCode 6, SHA-256 `C8AFBE32446E30D745CBCFE68C8C7D5DA101B7B58DD78CCD52167C2D7343AE76`, 89,461 bytes).
+
+| Test | Observed stages | Result | Store effect |
+|---|---|---|---|
+| `collect hr live` | Fresh nonzero HR collected and synced; `health.subscribeSample`, quality `live_sample_collect`. | **PASS** | heart_rate n=11 in store, latest value 83 bpm. Independent of the prior 62 bpm run. Repeat-collection after app reinstall confirms the pipeline is not session-bound. |
+| `collect recents` | Resting HR PASS 61 bpm, SpO2 PASS 99 %, stress PASS 43. heart_rate recent = zero shape → NO_DATA (rule holding). First attempt SEND_FAIL with the KNOWN `code=-6` instant-fail signature (PC BT active for OrbitV sideload, phone proxy absent — identical to the documented 2026-08-12 afternoon incident). Recovery: PC BT off, vivo Health connected, cold start → ACK_VALID ~1 s. Frozen batch replayed idempotently, zero data loss. | **PASS** (after documented recovery) | Metrics landed. The code=-6 incident is now twice-observed with identical cause and recovery. |
+| `collect stats` (run 1) | On-screen raw payload photographed. SUM types (STEP_COUNT / DISTANCE / CALORIES / STANDING / INTENSITY_SPORT): success callback delivered a LITERAL EMPTY OBJECT `raw={}` for every SUM type. CONCLUSIVE: the "wrong field read" hypothesis is dead — there are no fields at all. `getTodayStatistic` SUM types genuinely return nothing to a sideloaded quick app on this firmware. Events recorded NO_DATA with `raw_error_code: EMPTY_STAT_RESULT` and `raw={}` preserved. HEART_RATE MAX: PASS `raw={"value":178,"statisticType":2,"startTime":1786464000,"endTime":1786539544}` — full shape, `startTime` = today's local midnight in epoch seconds (more evidence for the seconds quirk). HEART_RATE MIN: `raw={"value":0,"statisticType":3,...}` → correctly recorded NO_DATA with `raw_error_code: ZERO_SENTINEL` (first on-device confirmation of the 0.1.5 sentinel rule). ACK_VALID ~3 s. | **PASS** (transport); per-metric results honestly reflect device behavior | 7 metric + 3 layer diags + transport receipt. |
+| `probe sleep` | On-screen raw payload photographed. SLEEP_STATUS via `getRecentSamples`: PASS `raw=[{"dataType":13,"data":{"timeStamp":1786539849,"value":0}}]` — an instantaneous awake/asleep state (value 0 = awake, operator awake at the time; `timeStamp` = current moment in epoch seconds). Not historical sleep. SLEEP_UNIT and SLEEP_STAGES via `getRecentSamples`: both hard-fail `code=200 message "getRecentSamples failed"` — the device refuses these data types outright. Both recorded as ERROR events with raw code preserved (the store's only 2 ERROR records — intentional evidence). `health.getStatistic` (the ranged statistic API listed in SDK `featureApi.js`): ABSENT at runtime — `typeof` check found no function, ranged call skipped cleanly. No path to last-night sleep aggregates for a sideloaded app. | **PASS** (probe completed; evidence recorded) | sleep_status 1 PASS; 2 ERROR records (sleep-refusal evidence). |
+| `collect stats` (run 2) | Identical shape to run 1 (batch accepted=11: 7 metric + 3 layer diags + transport receipt). Full app restart between runs. | **PASS** | Confirms deterministic repeat behavior. |
+
+### SUM statistics: conclusive verdict
+
+The 0.1.5 raw-payload dump answered the outstanding question from 0.1.4. The `getTodayStatistic` success callback for every SUM type (`STEP_COUNT`, `DISTANCE`, `CALORIES`, `STANDING`, `INTENSITY_SPORT`) delivers a literal empty object `{}` with no fields whatsoever — not a different field name, not unexplored nesting, not a permission issue. This is a device/firmware capability boundary for sideloaded quick apps on `WA2456C / DPD2346C_A_1.54.5`. HEART_RATE MAX/MIN continue to work via the same API with a full result shape.
+
+### ZERO_SENTINEL rule: first on-device confirmation
+
+`heart_rate_today_min` with `raw={"value":0,...}` was correctly mapped to NO_DATA with `raw_error_code: ZERO_SENTINEL` by the 0.1.5 watch code. This is the first real-device confirmation that the sentinel rule works as designed. The 0 bpm MIN value (which was a legal PASS in 0.1.4) is now correctly classified.
+
+### Sleep capability verdict for WA2456C
+
+Sleep data access for sideloaded quick apps on this device:
+
+| Data type | API | Result | Verdict |
+|---|---|---|---|
+| SLEEP_STATUS (=13) | `getRecentSamples` | PASS — instantaneous awake/asleep state (`value: 0` = awake) | Available; instantaneous only, not historical |
+| SLEEP_UNIT (=11) | `getRecentSamples` | ERROR `code=200 "getRecentSamples failed"` | Device refuses; unavailable |
+| SLEEP_STAGES (=12) | `getRecentSamples` | ERROR `code=200 "getRecentSamples failed"` | Device refuses; unavailable |
+| Sleep aggregates | `health.getStatistic` | Function absent at runtime | No API path exists |
+
+`health_sleep` returning NO_DATA for historical windows is the device's truth. The [RESEARCH.md](RESEARCH.md) prediction for this device class (SLEEP_UNIT/SLEEP_STAGES unsupported) is now device-proven.
+
+### code=-6 incident: twice-observed pattern
+
+The `collect recents` first attempt failed at sync with the same `code=-6` instant-fail signature observed during the 0.1.4 session. Root cause identical: the operator had re-enabled PC Bluetooth to sideload 0.1.5 through OrbitV, leaving the watch without its phone internet proxy. Recovery followed the same procedure (PC BT off, vivo Health connected, cold start, send batch HTTPS → ACK_VALID ~1 s). The frozen batch replayed idempotently with zero data loss. This is now a twice-observed, twice-recovered pattern with a known cause and a documented one-step fix.
+
+### Server-side 0.1.5 semantics verified
+
+Verified live on the VPS after deploying `server/src/database.js` (backup `database.js.bak-pre015` kept on the VPS):
+
+- `/v1/status` layers: `phone_receive` / `phone_persistence` / `uplink` now report `NOT_APPLICABLE` with note `"android bridge fallback; not on the active relay route"` (zero-record condition). All four watch layers PASS. `backend_ingest` / `database` PASS.
+- `heart_rate_today_min` under PASS filter: 0 records (historical PASS-0 records excluded by the bpm zero-validity query rule). Under `status=ALL` the raw records remain visible; the latest record is the new NO_DATA ZERO_SENTINEL one.
+- Regression check: `heart_rate` latest still returns real values (62 → now 83 bpm).
+
+### Final store state (2026-08-12 end of 0.1.5 session)
+
+94 records: 67 PASS, 25 NO_DATA, 2 ERROR (the two sleep-refusal evidence records).
+
+Metric coverage: heart_rate 11, heart_rate_resting 3, spo2 3, stress 3, heart_rate_today_max 4, heart_rate_today_min 2 (old PASS-0s) + new NO_DATA sentinels, sleep_status 1, layer diagnostics ~10 per watch layer, watch_transport receipts 7.
+
+### Final layer state (2026-08-12 end of 0.1.5 session)
+
+| Layer | Status | Evidence |
+|---|---|---|
+| `watch_module_api` | PASS | health module present, subscribe/getRecentSamples/getTodayStatistic all invoked successfully |
+| `permission` | PASS | `READ_HEALTH_DATA` granted, no code 400 received |
+| `sample_acquisition` | PASS | live HR collected, 3 of 4 recent-sample metrics real values, HEART_RATE MAX real, sentinel and evidence rules confirmed |
+| `watch_transport` | PASS | multiple ACK_VALID receipts |
+| `backend_ingest` | PASS | relay accepted all batches |
+| `database` | PASS | VPS store record_count 94 (67 PASS, 25 NO_DATA, 2 ERROR) |
+| `mcp_query` | PASS | operator's ChatGPT-side MCP query returned the fresh live heart rate (83 bpm) on 2026-08-12 evening — end-consumer visibility of the 0.1.5 state confirmed |
+| `phone_receive` | NOT_APPLICABLE | android bridge fallback; not on the active relay route |
+| `phone_persistence` | NOT_APPLICABLE | android bridge fallback; not on the active relay route |
+| `uplink` | NOT_APPLICABLE | android bridge fallback; not on the active relay route |
+
+### Acceptance
+
+0.1.5 acceptance goals met:
+
+1. Sentinel rule (`ZERO_SENTINEL`) confirmed on device — `heart_rate_today_min` value 0 correctly mapped to NO_DATA.
+2. SUM statistics conclusively established as a device capability boundary — literal empty object `{}`, no fields.
+3. Sleep boundaries established — instantaneous SLEEP_STATUS only; SLEEP_UNIT, SLEEP_STAGES, and `health.getStatistic` all unavailable.
+4. Raw-payload evidence preserved in every stat and sleep event for inspection.
+5. `NOT_APPLICABLE` layer semantics live on the server for bridge-only layers.
+6. Per-metric `sample_acquisition` breakdown working.
+7. Pipeline regression-free — live HR, recents, and stats all still pass.
+8. code=-6 incident pattern twice-observed with identical cause and documented recovery.
+
 ## Still unverified on this watch
 
 - Long-run repeated-sync stability, screen-off/background behavior, payload-size limits, and battery cost.
 - Multi-day queue retention while offline.
-- SUM statistics investigation (raw payload logging) — candidate for `0.1.5`.
-- The historical zero-bpm PASS record from `0.1.2` remains in the store (append-only) — superseded by NO_DATA mapping, noted, not rewritten.
+- The historical zero-bpm PASS record from `0.1.2` remains in the store (append-only) — 0.1.5 query validity rule now excludes it from PASS reads without mutation.
 - The exact `0.1.0`/`0.1.1` reboot class and offending component (historical; not currently blocking).
 - Android bridge receive/uplink (fallback only; not on the active path).

@@ -103,6 +103,26 @@ All producers use one status vocabulary:
 
 Layer diagnostics are independent: `watch_module_api`, `permission`, `sample_acquisition`, `watch_transport`, `phone_receive`, `phone_persistence`, `uplink`, `backend_ingest`, `database`, and `mcp_query`. A later healthy layer never overwrites an earlier failure.
 
+The event-level status vocabulary above is closed. Layer summaries in
+`/v1/status` may additionally report `NOT_APPLICABLE` for
+`phone_receive`/`phone_persistence`/`uplink` when zero records exist for
+them: these layers only ever produce records when the Android bridge is on
+the active path, and the current route is watch → relay → drain → service.
+The status distinguishes structural absence ("bridge is not in the path")
+from `NO_DATA` ("a producer for this layer ran and reported nothing"). If a
+real record ever arrives from a re-enabled bridge, the real status takes
+over from the next request.
+
+### Query validity rule: bpm-family value 0
+
+Under a PASS filter, the service excludes records whose metric is in
+`{heart_rate, heart_rate_resting, heart_rate_today_max, heart_rate_today_min}`
+AND whose numeric value is `0`. 0 bpm is physiologically impossible; it is a
+device sentinel/aggregate artifact (recent-sample zero shape, or
+`getTodayStatistic` MIN including non-wear windows on WA2456C). The append-
+only store is untouched; the raw records remain visible under `status=ALL`.
+See `contracts/README.md` for the full contract decision.
+
 ## Security and privacy
 
 - Non-loopback service binding is refused without a bearer token.

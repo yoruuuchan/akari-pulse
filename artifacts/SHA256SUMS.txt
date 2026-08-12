@@ -1,18 +1,20 @@
 # Akari Pulse host-built deliverables
-# Generated 2026-08-11, watch 0.1.3 added 2026-08-12, watch 0.1.4 added 2026-08-12 (Asia/Tokyo)
+# Generated 2026-08-11, watch 0.1.3 added 2026-08-12, watch 0.1.4 added 2026-08-12, watch 0.1.5 added 2026-08-12 (Asia/Tokyo)
 # Format: SHA-256, two spaces, filename
 #
 # Android package: dev.akari.pulse.bridge, versionCode 1, versionName 0.1.0
 # Android debug signer certificate SHA-256: d856396dcd991afdda0045df334b5845ee633eacb03787a2d6d908709ef13a44
 # Vendored vivo device-rpc AAR 1.0.0.17 SHA-256: 38b9c774b7c52b16f2ba7018c37864529e8656166e3db438c864ebc6043c95de
-# BlueOS current diagnostic: com.akaripulse.watch, versionCode 5, versionName 0.1.4, debug=true
-#   0.1.4 adds three collect+sync buttons (hr live, recents, stats) that enqueue real
-#   health observations plus per-layer diagnostic events and drive the same HTTPS
-#   transport that 0.1.3 verified; the device zero-shape (value=0 sample_timestamp=0)
-#   maps to NO_DATA at watch parse time.
-# BlueOS prior diagnostics 0.1.1 / 0.1.2 / 0.1.3 remain preserved under their versioned filenames.
+# BlueOS current diagnostic: com.akaripulse.watch, versionCode 6, versionName 0.1.5, debug=true
+#   0.1.5 keeps every 0.1.4 button; tightens collect stats with the ZERO_SENTINEL
+#   rule for heart_rate_today_max/min and raw-payload evidence on every stat event;
+#   changes the sample_acquisition layer diag to a per-metric breakdown message;
+#   adds one new one-per-launch button `probe sleep` covering SLEEP_STATUS /
+#   SLEEP_UNIT / SLEEP_STAGES via getRecentSamples plus (if health.getStatistic
+#   exists at runtime) a ranged last-night probe. 0.1.5 is NOT device-verified yet.
+# BlueOS prior diagnostics 0.1.1 / 0.1.2 / 0.1.3 / 0.1.4 remain preserved under their versioned filenames.
 #
-# Bytes: 31164014, 8757, 15674, 69585, 69649, 75466, 84899 in the order listed below.
+# Bytes: 31164014, 8757, 15674, 69585, 69649, 75466, 84899, 89461 in the order listed below.
 D5F43C1D2F0468DF7CF71594320DE9E9748DB2410D480361E825A3ACC570C6D5  akari-pulse-android-debug-0.1.0.apk
 7D7DA216EBF343045282EB335863184E5DAC23BF289452CA03B76FD3409DD3C1  akari-pulse-mcp-0.1.0.tgz
 58AEC6FC70C221D0E910AB2820CA2512AE4F058F1E29E0B18532A19E88C2A07C  akari-pulse-server-0.1.0.tgz
@@ -20,3 +22,4 @@ CD858F1C7A2F1D30F2B6A16B6EC3D5D4F8083E38534C904971E6F963BFD42A0C  akari-pulse-wa
 D5A368469F556A379575178ACFA57530D35546D44742433788F13ED8EE0E98C6  akari-pulse-watch-debug-0.1.2.rpk
 BFCCEA5B7181BFE20C7B547EA05E5025DC7DE76703A98A60D75BF95D1328E0A1  akari-pulse-watch-debug-0.1.3.rpk
 AF16F9E39CEBB67AB79408B03668907CD40BBBFB6F6705599A9C8808FC63372B  akari-pulse-watch-debug-0.1.4.rpk
+C8AFBE32446E30D745CBCFE68C8C7D5DA101B7B58DD78CCD52167C2D7343AE76  akari-pulse-watch-debug-0.1.5.rpk

@@ -1,8 +1,8 @@
 {
   "package": "com.akaripulse.watch",
   "name": "Akari Pulse",
-  "versionName": "0.1.4",
-  "versionCode": 5,
+  "versionName": "0.1.5",
+  "versionCode": 6,
   "appCategory": [
     "sports"
   ],

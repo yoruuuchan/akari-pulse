@@ -31,7 +31,7 @@ The repository contains real watch, Android, service, and MCP implementations. I
 
 | Layer | Host result | Real-device result |
 |---|---|---|
-| BlueOS watch app | `0.1.4` collect-and-sync RPK built with the BlueOS Studio toolchain (superset of `0.1.3`) | `0.1.2` passed the full isolated health chain (3/3 cold-start full-pipeline passes, no reboot); `0.1.3` `net probe` and `send batch https` passed on 2026-08-12; `0.1.4` all three collect+sync buttons verified 2026-08-12 — real nonzero HR, SpO2, stress, resting HR landed in the VPS store end-to-end (see [REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md)) |
+| BlueOS watch app | `0.1.5` evidence-and-boundary RPK built with the BlueOS Studio toolchain (superset of `0.1.4`; adds ZERO_SENTINEL and raw-payload evidence in `collect stats`, per-metric layer breakdown, and a new `probe sleep` button) | `0.1.2` passed the full isolated health chain (3/3 cold-start full-pipeline passes, no reboot); `0.1.3` `net probe` and `send batch https` passed on 2026-08-12; `0.1.4` all three collect+sync buttons verified 2026-08-12 — real nonzero HR, SpO2, stress, resting HR landed in the VPS store end-to-end; `0.1.5` (versionCode 6, SHA-256 `C8AFBE32446E30D745CBCFE68C8C7D5DA101B7B58DD78CCD52167C2D7343AE76`, 89,461 bytes) device-verified 2026-08-12: sentinel rule confirmed, SUM-stats and sleep boundaries conclusively established, NOT_APPLICABLE layer semantics live (see [REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md)) |
 | Watch health chain | one-test-per-launch harness | `PASS` — `getRecentSamples([HEART_RATE])` → callback → parse → UI → queue → snapshot → storage is stable; do not rework without new failing evidence |
 | Official BlueXlink RPC | public watch API and official Android AAR integrated | **closed**: `transport init` fails with `code=1001 interconnectfeature error`; support table lists only WATCH 3; vivo `appid`/`encryStr` unobtainable — see [RESEARCH.md](docs/RESEARCH.md) |
 | Cloudflare relay | deployed at `https://pulse.yoru-and-akari.dev`; ingest/replay/conflict/auth smoke-tested | `PASS` 2026-08-12 — the real watch reached the relay over HTTPS (~4 s TLS) and its batch was stored and acknowledged 3 s after `sent_at` |
@@ -42,24 +42,34 @@ The repository contains real watch, Android, service, and MCP implementations. I
 
 See [REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md) and [DIAGNOSTICS.md](docs/DIAGNOSTICS.md) for the exact evidence and adaptive one-test-per-launch sequence.
 
-**Current artifact (`0.1.4`, device-verified 2026-08-12)**: keeps every `0.1.3` button
-unchanged and adds three one-per-launch collect+sync buttons — `collect hr live`
-(60 s live HR subscription), `collect recents` (heart rate, resting HR, SpO2,
-stress via `getRecentSamples`), and `collect stats` (`getTodayStatistic` for
-step_count / distance / calories / standing / intensity_sport SUM and heart-rate
-MAX/MIN). All three passed end-to-end on the real watch: real nonzero HR (62 bpm
-live, 61 resting), SpO2 (99 %), stress (35) landed in the VPS store and are
-queryable via the remote MCP. The zero-shape → NO_DATA mapping was confirmed on
-device. Daily SUM statistics all returned empty (device capability boundary).
-See [REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md) for the full evidence.
+**Current artifact (`0.1.5`, device-verified 2026-08-12)**:
+keeps every `0.1.4` button unchanged; tightens `collect stats` with the
+`ZERO_SENTINEL` rule for `heart_rate_today_max/min` and raw-payload evidence in
+every stat event; changes the `sample_acquisition` layer diag to a per-metric
+breakdown message; adds one new one-per-launch button `probe sleep` that
+records `SLEEP_STATUS`/`SLEEP_UNIT`/`SLEEP_STAGES` via `getRecentSamples`.
+Device results: sentinel rule confirmed, SUM-stats conclusively empty-object
+(`{}`, no fields), sleep boundaries established (instantaneous SLEEP_STATUS only;
+SLEEP_UNIT, SLEEP_STAGES, and `health.getStatistic` all unavailable),
+NOT_APPLICABLE layer semantics live. VPS store: 94 records (67 PASS, 25 NO_DATA,
+2 ERROR). See [REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md) for the
+full acceptance results and [DIAGNOSTICS.md](docs/DIAGNOSTICS.md) for the
+tightened contracts and device quirks.
 
-Final host-built deliverables (2026-08-11, watch `0.1.3` added 2026-08-12, watch `0.1.4` added 2026-08-12):
+Previous device-verified artifact (`0.1.4`, 2026-08-12): all three collect+sync
+buttons passed end-to-end — real nonzero HR (62 bpm live, 61 resting), SpO2
+(99 %), stress (35) landed in the VPS store and are queryable via the remote
+MCP. Daily SUM statistics all returned empty (device capability boundary — the
+outstanding question the `0.1.5` raw-payload dump resolved conclusively).
+
+Final host-built deliverables (2026-08-11, watch `0.1.3` added 2026-08-12, watch `0.1.4` added 2026-08-12, watch `0.1.5` added 2026-08-12):
 
 Binaries are not distributed in this repository (see [artifacts/README.md](artifacts/README.md)); the table below is the historical hash record of the privately built and device-verified artifacts.
 
 | Artifact | Bytes | SHA-256 |
 |---|---:|---|
 | `akari-pulse-android-debug-0.1.0.apk` | 31,164,014 | `D5F43C1D2F0468DF7CF71594320DE9E9748DB2410D480361E825A3ACC570C6D5` |
+| `akari-pulse-watch-debug-0.1.5.rpk` | 89,461 | `C8AFBE32446E30D745CBCFE68C8C7D5DA101B7B58DD78CCD52167C2D7343AE76` |
 | `akari-pulse-watch-debug-0.1.4.rpk` | 84,899 | `AF16F9E39CEBB67AB79408B03668907CD40BBBFB6F6705599A9C8808FC63372B` |
 | `akari-pulse-watch-debug-0.1.3.rpk` | 75,466 | `BFCCEA5B7181BFE20C7B547EA05E5025DC7DE76703A98A60D75BF95D1328E0A1` |
 | `akari-pulse-watch-debug-0.1.2.rpk` | 69,649 | `D5A368469F556A379575178ACFA57530D35546D44742433788F13ED8EE0E98C6` |

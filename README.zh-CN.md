@@ -31,7 +31,7 @@ WA2456C / BlueOS 3.0
 
 | 层 | 宿主机结果 | 真机结果 |
 |---|---|---|
-| BlueOS 手表应用 | `0.1.4` 采集+同步 RPK，用 BlueOS Studio 工具链构建（`0.1.3` 的超集） | `0.1.2` 通过完整隔离健康链路（3/3 次冷启动全管线通过，无重启）；`0.1.3` 的 `net probe` 与 `send batch https` 于 2026-08-12 通过；`0.1.4` 三个采集+同步按钮 2026-08-12 全部真机验证——真实非零心率、血氧、压力、静息心率端到端落入 VPS 存储（见 [REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md)） |
+| BlueOS 手表应用 | `0.1.5` 证据与边界 RPK，用 BlueOS Studio 工具链构建（`0.1.4` 的超集：`collect stats` 新增 ZERO_SENTINEL 规则和每次调用的原始负载证据、层级诊断改为逐指标分解、新增 `probe sleep` 按钮） | `0.1.2` 通过完整隔离健康链路（3/3 次冷启动全管线通过，无重启）；`0.1.3` 的 `net probe` 与 `send batch https` 于 2026-08-12 通过；`0.1.4` 三个采集+同步按钮 2026-08-12 全部真机验证——真实非零心率、血氧、压力、静息心率端到端落入 VPS 存储；`0.1.5`（versionCode 6，SHA-256 `C8AFBE32446E30D745CBCFE68C8C7D5DA101B7B58DD78CCD52167C2D7343AE76`，89,461 字节）2026-08-12 真机验证：sentinel 规则确认、SUM 统计与睡眠边界结论性确立、NOT_APPLICABLE 层语义已在服务端生效（见 [REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md)） |
 | 手表健康链路 | 每次启动只跑一项测试的测试框架 | `PASS` —— `getRecentSamples([HEART_RATE])` → 回调 → 解析 → UI → 队列 → 快照 → 存储稳定；没有新的失败证据不要重做 |
 | 官方 BlueXlink RPC | 公开手表 API 与官方 Android AAR 均已集成 | **已关闭**：`transport init` 报 `code=1001 interconnectfeature error`；官方支持表只列 WATCH 3；vivo `appid`/`encryStr` 无法获取——见 [RESEARCH.md](docs/RESEARCH.md) |
 | Cloudflare 中转 | 部署验证（入库/重放/冲突/鉴权冒烟测试通过） | `PASS` 2026-08-12 —— 真机手表经 HTTPS 到达中转（TLS 约 4 秒），批次在 `sent_at` 后 3 秒内被存储并确认 |
@@ -42,13 +42,16 @@ WA2456C / BlueOS 3.0
 
 精确证据与"每次启动只测一项"的自适应流程见 [REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md) 与 [DIAGNOSTICS.md](docs/DIAGNOSTICS.md)。
 
-**当前工件（`0.1.4`，2026-08-12 真机验证）**：保留 `0.1.3` 全部按钮不变，新增三个"每次启动只跑一个"的采集+同步按钮——`collect hr live`（60 秒实时心率订阅）、`collect recents`（经 `getRecentSamples` 读心率、静息心率、血氧、压力）、`collect stats`（经 `getTodayStatistic` 读步数/距离/卡路里/站立/中高强度 SUM 与心率 MAX/MIN）。三项均在真机端到端通过：真实非零心率（实时 62 bpm、静息 61）、血氧（99%）、压力（35）落入 VPS 存储并可经远程 MCP 查询。零值形状 → NO_DATA 的映射已真机确认。全部 SUM 日统计返回空（设备能力边界）。完整证据见 [REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md)。
+**当前工件（`0.1.5`，2026-08-12 真机验证）**：保留 `0.1.4` 全部按钮不变；给 `collect stats` 加上 `heart_rate_today_max/min` 的 `ZERO_SENTINEL` 规则（0 bpm 生理上不可能，MIN 聚合会包含离体窗口，因此判为 NO_DATA），并在每一条 stat 事件里都保留原始负载作证据；`sample_acquisition` 层诊断改成"按指标分解"的消息，代替原来的 "N PASS of M"；新增一个"每次启动只跑一个"的按钮 `probe sleep`，经 `getRecentSamples` 读取 `SLEEP_STATUS`/`SLEEP_UNIT`/`SLEEP_STAGES` 的真机结果。真机结论：sentinel 规则确认；SUM 统计的 success 回调是字面上的空对象 `{}`（没有任何字段），是本固件对侧载 quick app 的能力边界；睡眠能力边界已确立——只能拿到瞬时 `SLEEP_STATUS`，`SLEEP_UNIT`、`SLEEP_STAGES`、`health.getStatistic` 在运行时均不可用；服务端 `NOT_APPLICABLE` 层语义已生效。VPS 存储：94 条记录（67 PASS，25 NO_DATA，2 ERROR）。完整验收结果见 [REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md)，收紧后的契约与设备怪癖见 [DIAGNOSTICS.md](docs/DIAGNOSTICS.md)。
+
+上一版真机验证工件（`0.1.4`，2026-08-12）：三个采集+同步按钮均端到端通过——真实非零心率（实时 62 bpm、静息 61）、血氧（99%）、压力（35）落入 VPS 存储并可经远程 MCP 查询。全部 SUM 日统计返回空（设备能力边界，`0.1.5` 的原始负载 dump 已结论性回答这个悬案）。
 
 本仓库不发布二进制文件（见 [artifacts/README.md](artifacts/README.md)）；下表是私有构建并经真机验证的工件的历史哈希记录。
 
 | 工件 | 字节数 | SHA-256 |
 |---|---:|---|
 | `akari-pulse-android-debug-0.1.0.apk` | 31,164,014 | `D5F43C1D2F0468DF7CF71594320DE9E9748DB2410D480361E825A3ACC570C6D5` |
+| `akari-pulse-watch-debug-0.1.5.rpk` | 89,461 | `C8AFBE32446E30D745CBCFE68C8C7D5DA101B7B58DD78CCD52167C2D7343AE76` |
 | `akari-pulse-watch-debug-0.1.4.rpk` | 84,899 | `AF16F9E39CEBB67AB79408B03668907CD40BBBFB6F6705599A9C8808FC63372B` |
 | `akari-pulse-watch-debug-0.1.3.rpk` | 75,466 | `BFCCEA5B7181BFE20C7B547EA05E5025DC7DE76703A98A60D75BF95D1328E0A1` |
 | `akari-pulse-watch-debug-0.1.2.rpk` | 69,649 | `D5A368469F556A379575178ACFA57530D35546D44742433788F13ED8EE0E98C6` |
