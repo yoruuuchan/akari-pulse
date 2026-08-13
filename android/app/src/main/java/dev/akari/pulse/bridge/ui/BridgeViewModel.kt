@@ -9,6 +9,8 @@ import dev.akari.pulse.bridge.data.HealthEventEntity
 import dev.akari.pulse.bridge.data.QueueStats
 import dev.akari.pulse.bridge.diagnostics.SyncDiagnostics
 import dev.akari.pulse.bridge.diagnostics.TransportDiagnostics
+import dev.akari.pulse.bridge.phonehealth.PhoneHealthStatus
+import dev.akari.pulse.bridge.phonehealth.PhoneTodayActivity
 import dev.akari.pulse.bridge.settings.BridgeConfigSummary
 import dev.akari.pulse.bridge.sync.SyncScheduler
 import dev.akari.pulse.bridge.transport.AdapterStartResult
@@ -38,6 +40,7 @@ data class BridgeUiState(
     ),
     val queue: QueueStats = QueueStats(0, 0, 0, null, null, null),
     val recentEvents: List<HealthEventEntity> = emptyList(),
+    val phoneHealth: PhoneTodayActivity? = null,
     val sync: SyncDiagnostics = SyncDiagnostics(),
     val transport: TransportDiagnostics = TransportDiagnostics(),
     val notice: UiNotice? = null,
@@ -52,7 +55,8 @@ class BridgeViewModel(
     private val repositoryState = combine(
         runtime.repository.observeQueueStats(),
         runtime.repository.observeRecentEvents(),
-    ) { queue, events -> queue to events }
+        runtime.phoneHealth.state,
+    ) { queue, events, phoneHealth -> Triple(queue, events, phoneHealth) }
 
     val uiState: StateFlow<BridgeUiState> = combine(
         runtime.preferences.summary,
@@ -65,6 +69,7 @@ class BridgeViewModel(
             config = config,
             queue = repository.first,
             recentEvents = repository.second,
+            phoneHealth = repository.third,
             sync = sync,
             transport = transport,
             notice = currentNotice,
@@ -99,6 +104,16 @@ class BridgeViewModel(
     fun syncNow() {
         SyncScheduler.enqueueNow(getApplication(), expedited = true)
         notice.value = UiNotice("uplink work queued", false)
+    }
+
+    fun readPhoneHealth() {
+        viewModelScope.launch {
+            val result = runtime.phoneHealth.refresh()
+            notice.value = UiNotice(
+                "phone health ${result.status.name} · ${result.outcome.name.lowercase()}",
+                result.status == PhoneHealthStatus.ERROR,
+            )
+        }
     }
 
     fun refreshActiveSessions() {

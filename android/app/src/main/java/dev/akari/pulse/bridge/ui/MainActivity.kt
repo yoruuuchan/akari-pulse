@@ -1,6 +1,7 @@
 package dev.akari.pulse.bridge.ui
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +13,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import dev.akari.pulse.bridge.AkariPulseApplication
+import dev.akari.pulse.bridge.BuildConfig
 import dev.akari.pulse.bridge.transport.http.WatchReceiverService
 import dev.akari.pulse.bridge.ui.theme.AkariPulseTheme
 
@@ -42,6 +44,13 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+        handleDebugIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleDebugIntent(intent)
     }
 
     private fun startHttpReceiver() {
@@ -54,5 +63,16 @@ class MainActivity : ComponentActivity() {
         } else {
             WatchReceiverService.start(this)
         }
+    }
+
+    private fun handleDebugIntent(intent: Intent?) {
+        if (BuildConfig.DEBUG && intent?.action == ACTION_DEBUG_READ_PHONE_HEALTH) {
+            bridgeViewModel.readPhoneHealth()
+        }
+    }
+
+    companion object {
+        const val ACTION_DEBUG_READ_PHONE_HEALTH =
+            "dev.akari.pulse.bridge.action.DEBUG_READ_PHONE_HEALTH"
     }
 }

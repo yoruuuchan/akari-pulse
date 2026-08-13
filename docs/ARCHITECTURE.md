@@ -76,6 +76,24 @@ Android has two independent boundaries:
 
 WorkManager retries transient uplink failure with backoff. A batch/event ID conflict is terminal and remains visible for investigation. Bridge settings keep service and bridge tokens in Android Keystore-backed encrypted storage; source files and diagnostics do not print them.
 
+## Phone-local today activity boundary
+
+The Android bridge now has a separate `VivoTodayActivityReader` for the vivo phone's current-day activity summary. It reads `com.vivo.assistant.step.provider` through `ContentProvider.call("updateTodaySportAIDLBean")` with the hard invariant `ignore=true`. Akari does not enter the provider's explicit sync/setter branch, although a stale vivo cache may cause the vendor service to perform its own day-rollover maintenance. It does not replace, stop, or modify the watch → relay → backend route.
+
+The runtime state and debug JSON retain four distinct outcomes: provider success, provider `NO_DATA`, provider call failure, and result parse failure. A real zero from a successful provider Bundle remains `PASS`; Settings `vivo_settings_realtime_steps` is diagnostics only and never acts as fallback. The provider exposes the final calendar-day cumulative `step`, not a delta, and does not expose the source timestamp. The reader therefore reports the phone's actual timezone and local day plus an explicitly observation-only `sample_epoch_ms`.
+
+Phone results are deliberately not uploaded in this phase. The existing generic health-event record has producer/sample timestamps but no `source_day` or `source_timezone`; `/v1/health/today` buckets records from event timestamps using the caller's numeric offset. Treating the bridge observation time as the source time could mis-bucket an `Asia/Shanghai` day summary near midnight, and reusing watch metric `step_count` would hide source precedence.
+
+The smallest safe backend extension is:
+
+1. preserve immutable `source_day`, IANA `source_timezone`, freshness classification, and source-timestamp availability on phone-summary records;
+2. use a distinct `phone_step_count` metric while retaining watch `step_count` and cumulative-since-boot `step_count_sensor` unchanged;
+3. have `health_today` group phone summaries by `source_day`, not by the observation timestamp;
+4. have `health_steps` return every available source and state an explicit preference, with the UI-verified phone day summary ahead of the boot-relative sensor value but never deleting or overwriting either record;
+5. keep distance/calorie verification metadata with those fields if they are later ingested rather than silently promoting them to interchangeable watch metrics.
+
+That change spans the shared schema, Android Room migration/event factory, server persistence/query rules, and MCP tests, so it is intentionally separated from the verified phone-reader integration.
+
 ## Service durability and queries
 
 The Node.js service uses `node:sqlite` in WAL mode for file-backed databases. `health_records` and `sync_batches` are append-only through the HTTP API. Batch and event IDs are idempotent only for identical payloads; reusing an ID for different content returns `409` without choosing either interpretation.

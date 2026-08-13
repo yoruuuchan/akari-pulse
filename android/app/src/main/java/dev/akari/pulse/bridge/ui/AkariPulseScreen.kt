@@ -44,6 +44,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.akari.pulse.bridge.data.HealthEventEntity
 import dev.akari.pulse.bridge.diagnostics.AdapterDiagnostics
 import dev.akari.pulse.bridge.diagnostics.TransportPhase
+import dev.akari.pulse.bridge.phonehealth.PhoneHealthStatus
 import dev.akari.pulse.bridge.ui.theme.AkariError
 import java.text.DateFormat
 import java.util.Date
@@ -64,6 +65,7 @@ fun AkariPulseScreen(
         state.queue.lastError != null ||
         state.transport.officialRpc.phase == TransportPhase.ERROR ||
         state.transport.httpReceiver.phase == TransportPhase.ERROR ||
+        state.phoneHealth?.status == PhoneHealthStatus.ERROR ||
         state.notice?.isError == true
 
     Surface(color = MaterialTheme.colorScheme.background) {
@@ -160,6 +162,42 @@ fun AkariPulseScreen(
                         modifier = Modifier.weight(1f).heightIn(min = 48.dp),
                     ) { Text("notify stop") }
                 }
+            }
+
+            SectionCard(title = "phone health · vivo local") {
+                val phoneHealth = state.phoneHealth
+                if (phoneHealth == null) {
+                    Text(
+                        "not sampled · provider is authoritative; Settings is diagnostics only",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                } else {
+                    MetricRow("status", "${phoneHealth.status} · ${phoneHealth.outcome}")
+                    MetricRow("source", phoneHealth.source)
+                    MetricRow("day", phoneHealth.day)
+                    MetricRow("timezone", phoneHealth.timezone)
+                    MetricRow("steps", phoneHealth.steps?.toString() ?: "not returned")
+                    MetricRow(
+                        "distance",
+                        phoneHealth.distanceMeters?.let { "$it m" } ?: "not returned",
+                    )
+                    MetricRow(
+                        "calories",
+                        phoneHealth.caloriesKilocalories?.let { "$it kcal" } ?: "not returned",
+                    )
+                    MetricRow("sampled", formatTime(phoneHealth.sampleEpochMs))
+                    Text(
+                        "sample time is the bridge observation time; the provider exposes no source timestamp",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = viewModel::readPhoneHealth,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                ) { Text("read today activity") }
             }
 
             SectionCard(title = "http receiver · fallback probe") {

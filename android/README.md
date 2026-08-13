@@ -1,6 +1,6 @@
 # akari pulse android bridge
 
-This module is the Android persistence and uplink bridge between the BlueOS watch producer and the Akari Health service. It stores every validated watch event in Room before acknowledging it, keeps stable upload batches across retries, and never turns missing or failed readings into `0` or another synthetic value.
+This module is the Android persistence and uplink bridge between the BlueOS watch producer and the Akari Health service. It also contains a phone-local reader for vivo Health's current-day activity summary. The watch route is unchanged: every validated watch event is stored in Room before acknowledgement, upload batches remain stable across retries, and missing or failed readings never become `0` or another synthetic value.
 
 The generated APK is sideloadable, but the official vivo path remains a real-device gate. A successful local build does not prove that vivo WATCH GT `WA2456C` supports the device RPC channel.
 
@@ -33,6 +33,7 @@ android/
     data/                           Room entities, transactions, idempotence, upload batching
     diagnostics/                    adapter and uplink runtime state
     network/                        server client and HTTPS/tailnet URL policy
+    phonehealth/                    vivo phone-local today activity reader and state
     settings/                       preferences and Android Keystore-backed secrets
     sync/                           WorkManager periodic and immediate uplink
     transport/http/                 explicit foreground HTTP probe receiver
@@ -61,6 +62,31 @@ Enter these secrets through the in-app settings screen:
 They are encrypted with an Android Keystore AES/GCM key. They are not read from source files, shown back in the UI, or written to diagnostics. Blank secret fields keep an existing value.
 
 The manifest publishes both `vivo.health.rpc.appid` (the first key read by AAR 1.0.0.17) and the documented `appid` fallback, plus `health.device.manager.version=1`.
+
+## vivo phone-local today activity
+
+The phone reader is independent of Health Kit registration and the BlueXlink watch receiver. It declares vivo's normal `com.vivo.assistant.StepProvider` permission and calls:
+
+```text
+content://com.vivo.assistant.step.provider
+method = updateTodaySportAIDLBean
+extras.ignore = true
+```
+
+`ignore=true` is invariant: it prevents caller-supplied step, distance, or calorie values from entering vivo's explicit sync/setter branch. The provider's returned `step` is already the current local-calendar-day cumulative summary and is never summed again. This is a read operation from Akari's boundary, but it is not described as absolutely side-effect-free: when vivo's cached day is stale, the vendor service may perform its own day-rollover maintenance. `Settings.System["vivo_settings_realtime_steps"]` is captured only as a secondary diagnostic; it is never promoted to `PASS` when the provider is absent or fails.
+
+The structured result distinguishes `PROVIDER_CALL_SUCCEEDED`, `PROVIDER_NO_DATA`, `PROVIDER_CALL_FAILED`, and `PARSE_FAILED`. It includes the actual timezone/day, bridge observation time, permission state, capability/result Bundle keys, raw `can_step`, the unavailable `ret_code` as explicit `null`, Settings observation, and exception type/message. The vivo call does not expose a source timestamp, so `sample_epoch_ms` and `sampled_at` are labelled as observation time only.
+
+On a debug APK, trigger one read and print exactly one JSON object under log tag `AkariPhoneHealth`:
+
+```powershell
+adb shell am start -S `
+  -a dev.akari.pulse.bridge.action.DEBUG_READ_PHONE_HEALTH `
+  -n dev.akari.pulse.bridge/.ui.MainActivity
+adb logcat -d -s AkariPhoneHealth:I '*:S'
+```
+
+The existing bridge screen exposes the same operation as `read today activity` and keeps the latest result in runtime state. This phase does not persist or upload phone health: the current backend event contract has no source calendar day/timezone fields, so ingesting an observation-time-only value could place a Shanghai-day summary into the wrong day when an MCP caller uses another offset. See [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) for the remaining interface boundary.
 
 ## official vivo RPC boundary
 
@@ -183,7 +209,8 @@ The app declares only the permissions needed by this implementation:
 - `INTERNET` and `ACCESS_NETWORK_STATE` for uplink;
 - `CHANGE_NETWORK_STATE` as the connected-device foreground-service prerequisite;
 - `FOREGROUND_SERVICE` and `FOREGROUND_SERVICE_CONNECTED_DEVICE` for the user-started HTTP listener;
-- `POST_NOTIFICATIONS` on Android 13+ so that foreground-service state is visible.
+- `POST_NOTIFICATIONS` on Android 13+ so that foreground-service state is visible;
+- vivo's normal `com.vivo.assistant.StepProvider` permission for the phone-local summary read.
 
 The AAR and WorkManager merge their own `com.vivo.devicerpc.notify`, `WAKE_LOCK`, and `RECEIVE_BOOT_COMPLETED` declarations. The app does not request Bluetooth, location, body-sensor, or Health Connect permissions because this bridge does not access those APIs directly.
 
@@ -228,9 +255,11 @@ $apksigner = Join-Path $env:ANDROID_HOME 'build-tools\36.1.0\apksigner.bat'
 
 The debug APK uses the local Android debug key. No signing private key is included or copied into this module. The watch RPC configuration must use the package `dev.akari.pulse.bridge` and the SHA-256 certificate fingerprint printed from the exact APK installed on the phone. A release build will have a different fingerprint.
 
+The final 2026-08-14 phone-reader implementation completed 21 unit tests, `assembleDebug`, and `lintDebug`. The installed debug APK was 30,931,114 bytes with SHA-256 `6B4D9C04A2C7B13C9022B2527D224C475FE8DD19E93873FBCA81D06F5E123FC1`; it cold-started successfully on the vivo phone and produced a real nonzero `PASS` result matching the vivo Health UI. This hash is an execution record for the local debug-signed artifact, not a published release promise.
+
 ## remaining real-device gates
 
-- ADB currently has no attached vivo X200 Pro, so installation, notification permission, foreground service survival, and Funtouch OS background behavior are not verified here.
+- The APK and phone-local today-activity reader were installed and verified on the vivo phone on 2026-08-14. Notification permission, foreground-service survival, and Funtouch OS background behavior for the fallback watch receiver remain separate unverified gates.
 - No `VIVO_RPC_APP_ID` or `encryStr` is committed; official initialization cannot pass without the issued credentials and matching signing registration.
 - `getHealthDeviceVersion() >= 2`, health-app permission status, BlueXlink connection, package/fingerprint pairing, request/response ACK, and session notification delivery must all be captured on the physical phone/watch pair.
 - `WA2456C` support is explicitly unverified. Unsupported runtime/device behavior must remain `UNSUPPORTED` or `API_MISSING`, never a mock success.

@@ -213,3 +213,35 @@ Metric coverage: heart_rate 11, heart_rate_resting 3, spo2 3, stress 3, heart_ra
 - The historical zero-bpm PASS record from `0.1.2` remains in the store (append-only) — 0.1.5 query validity rule now excludes it from PASS reads without mutation.
 - The exact `0.1.0`/`0.1.1` reboot class and offending component (historical; not currently blocking).
 - Android bridge receive/uplink (fallback only; not on the active path).
+
+## 2026-08-14 — Android vivo phone-local today activity reader
+
+The engineering reader was built into `dev.akari.pulse.bridge`, installed with `adb install -r`, and cold-started through the debug read intent. Android granted `com.vivo.assistant.StepProvider`; the bridge process started and emitted this real nonzero provider result under log tag `AkariPhoneHealth`:
+
+```text
+status=PASS
+outcome=PROVIDER_CALL_SUCCEEDED
+source=vivo_assistant_step_provider
+day=2026-08-14
+timezone=Asia/Shanghai
+steps=5
+distance_m=3.0
+calories_kcal=5.105000019073486
+sample_epoch_ms=1786641196532
+capability_bundle_keys=[can_step]
+provider_bundle_keys=[calorie,distance,step]
+raw_can_step=1
+raw_ret_code=null
+ret_code_available=false
+settings_realtime_steps_raw=5
+settings_used_as_fallback=false
+request_ignore=true
+call_duration_ms=7
+source_timestamp_available=false
+```
+
+A vivo Health UI capture at `2026-08-14T01:13:15+0800` showed `5 / 7,000步`; the final reader sample at `2026-08-14T01:13:16.532+08:00` returned `steps=5`, for an exact nonzero match. The finalized APK was 30,931,114 bytes with SHA-256 `6B4D9C04A2C7B13C9022B2527D224C475FE8DD19E93873FBCA81D06F5E123FC1`; the installed `base.apk` produced the same digest. Its cold launch reported `Status: ok`, `LaunchState: COLD`, and the Akari activity became top-resumed. An earlier engineered zero sample also matched the same-minute vivo Health main card and healthwidget at zero, while the prior independent nonzero control remains `vivo Health UI 5722 == provider 5722`.
+
+Steps are `VERIFIED` by exact zero and nonzero UI controls. Distance and calories are classified `VERIFIED_FORMATTED_DISPLAY`: the prior nonzero sample mapped provider `4319.39` to UI `4.31 km` and provider `263.81702` to UI `263 kcal`; this verifies their unit/display correspondence but not source-timestamp freshness. Settings remained a secondary observation and was not used to manufacture success.
+
+The phone result is runtime state only in this phase. It was not sent to the watch, local Room queue, relay, production backend, or MCP, and the established watch route was not modified.
