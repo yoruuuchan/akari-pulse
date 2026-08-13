@@ -9,7 +9,7 @@ build/
 *.secrets*
 .DS_Store
 Thumbs.db
-data/
+/data/
 server/data/
 android/.gradle/
 android/local.properties
