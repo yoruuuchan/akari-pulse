@@ -55,7 +55,7 @@ VIVO_RPC_APP_ID=123456
 
 Enter these secrets through the in-app settings screen:
 
-- Akari Health bearer token;
+- Akari Health bearer token for a direct service URL, or the separate phone ingest token when the URL is the Cloudflare relay;
 - `X-Akari-Bridge-Token` for a non-loopback HTTP receiver;
 - vivo intelligent-terminal SDK `encryStr`.
 
@@ -86,7 +86,9 @@ adb shell am start -S `
 adb logcat -d -s AkariPhoneHealth:I '*:S'
 ```
 
-The existing bridge screen exposes the same operation as `read today activity` and keeps the latest result in runtime state. This phase does not persist or upload phone health: the current backend event contract has no source calendar day/timezone fields, so ingesting an observation-time-only value could place a Shanghai-day summary into the wrong day when an MCP caller uses another offset. See [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) for the remaining interface boundary.
+The bridge screen exposes the same operation as `read today activity`. A completed read now writes three Room v2 rows under `source=vivo_phone`: `phone_step_count`, `phone_distance`, and `phone_calories`. Their composite key is `source + metric + source_day`, so repeated reads replace the current summary for that day instead of summing it. `PASS` is the only state that stores a value; a real zero remains `PASS`, while `NO_DATA` and `ERROR` remain valueless and overwrite any older state rather than using a hidden cache.
+
+The same transaction inserts an immutable outbox batch containing the exact `source_day`, IANA `source_timezone`, observation-only `sampled_at`, `source_timestamp_available=false`, outcome, and verification state. WorkManager retries the stable payload at `POST /v1/health/daily-summaries`. When pointed at the production relay, the configured secret is sent as `X-Akari-Bridge-Token`; when pointed directly at Akari Health it is also sent as the normal bearer credential. A batch is complete only after `accepted + duplicates + stale` equals its three summaries. Watch event persistence and `/v1/health/batches` uplink remain unchanged.
 
 ## official vivo RPC boundary
 
@@ -186,9 +188,11 @@ Room uses write-ahead logging and no destructive migration fallback. It stores:
 - whether `value` was present, so missing data remains distinct from a real numeric zero;
 - a `PASS` value must be present and non-null; valid values such as numeric `0` and boolean `false` remain intact;
 - inbound watch batch digest and acknowledgement counts for idempotent replay;
-- stable Android upload batch ID, `sent_at`, event assignment, attempts, and terminal error text.
+- stable Android watch upload batch ID, `sent_at`, event assignment, attempts, and terminal error text;
+- current phone daily summaries keyed by `source + metric + source_day`, including timezone, observation time, explicit status/outcome, and nullable sync time;
+- immutable phone daily-summary outbox JSON so a retry never changes the content behind a `batch_id`.
 
-The worker uploads one to 500 original normalized events to `POST <server>/v1/health/batches`. Events are marked synced only after a successful server response returns the same `batch_id` and `accepted + duplicates` equals the submitted event count. Network failures, HTTP 408/425/429, and 5xx responses are retryable. Contract conflicts and other permanent failures remain visible and do not delete queued data.
+The worker drains watch batches first and then phone daily-summary batches without changing either contract. Watch events require `accepted + duplicates == event_count`; phone summaries require `accepted + duplicates + stale == summary_count`. A completed older phone outbox batch marks the current row synced only if its `sampled_at` still matches, so it cannot mark a newer local read complete. Network failures, HTTP 408/425/429, and 5xx responses are retryable. Contract conflicts and other permanent failures remain visible and do not delete queued data.
 
 `GET <server>/v1/sessions/active` is a read-only status check. Heart-rate/session correlation remains a backend time-window decision; Android does not fabricate a session association.
 

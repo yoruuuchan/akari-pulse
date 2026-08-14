@@ -23,6 +23,39 @@ const EVENT_KEYS = new Set([
   "raw_error_message",
 ]);
 
+const DAILY_SUMMARY_KEYS = new Set([
+  "source",
+  "metric",
+  "source_day",
+  "source_timezone",
+  "value",
+  "unit",
+  "sampled_at",
+  "source_timestamp_available",
+  "status",
+  "outcome",
+  "verification",
+  "raw_error_code",
+  "raw_error_message",
+]);
+
+const PHONE_DAILY_METRICS = new Map([
+  ["phone_step_count", "count"],
+  ["phone_distance", "m"],
+  ["phone_calories", "kcal"],
+]);
+const PHONE_DAILY_STATUSES = new Set(["PASS", "NO_DATA", "ERROR"]);
+const PHONE_DAILY_OUTCOMES_BY_STATUS = new Map([
+  ["PASS", new Set(["PROVIDER_CALL_SUCCEEDED"])],
+  ["NO_DATA", new Set(["PROVIDER_NO_DATA"])],
+  ["ERROR", new Set(["PROVIDER_CALL_FAILED", "PARSE_FAILED"])],
+]);
+const PHONE_DAILY_VERIFICATIONS = new Set([
+  "VERIFIED",
+  "VERIFIED_FORMATTED_DISPLAY",
+  "UNVERIFIED",
+]);
+
 const MAX_BODY_BYTES = 1_048_576;
 
 class HttpError extends Error {
@@ -50,6 +83,36 @@ function expectString(value, path, { min = 1, max = 128, pattern } = {}) {
 function expectEpoch(value, path) {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new HttpError(400, "INVALID_REQUEST", `${path} must be a non-negative Unix epoch millisecond integer`);
+  }
+  return value;
+}
+
+function expectSourceDay(value, path) {
+  expectString(value, path, { max: 10, pattern: /^\d{4}-\d{2}-\d{2}$/ });
+  const parsed = Date.parse(`${value}T00:00:00.000Z`);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString().slice(0, 10) !== value) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path} must be a valid calendar date`);
+  }
+  return value;
+}
+
+function expectSourceTimezone(value, path) {
+  expectString(value, path, { max: 64 });
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: value }).format(0);
+  } catch {
+    throw new HttpError(400, "INVALID_REQUEST", `${path} must be an IANA timezone`);
+  }
+  return value;
+}
+
+function expectSampledAt(value, path) {
+  expectString(value, path, { max: 64 });
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path} must be ISO-8601 with an explicit offset`);
+  }
+  if (!Number.isSafeInteger(Date.parse(value)) || Date.parse(value) < 0) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path} must be a valid timestamp`);
   }
   return value;
 }
@@ -116,6 +179,76 @@ function validateBatch(input) {
   return input;
 }
 
+function validateDailySummary(input, path) {
+  if (!isPlainObject(input)) throw new HttpError(400, "INVALID_REQUEST", `${path} must be an object`);
+  const unknown = Object.keys(input).filter((key) => !DAILY_SUMMARY_KEYS.has(key));
+  if (unknown.length > 0) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path} contains unknown fields: ${unknown.sort().join(", ")}`);
+  }
+  if (input.source !== "vivo_phone") {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.source must be vivo_phone`);
+  }
+  const metric = expectString(input.metric, `${path}.metric`, { max: 64 });
+  const expectedUnit = PHONE_DAILY_METRICS.get(metric);
+  if (!expectedUnit) throw new HttpError(400, "INVALID_REQUEST", `${path}.metric is not supported`);
+  if (input.unit !== expectedUnit) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.unit must be ${expectedUnit} for ${metric}`);
+  }
+  expectSourceDay(input.source_day, `${path}.source_day`);
+  expectSourceTimezone(input.source_timezone, `${path}.source_timezone`);
+  expectSampledAt(input.sampled_at, `${path}.sampled_at`);
+  if (input.source_timestamp_available !== false) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.source_timestamp_available must be false`);
+  }
+  if (!PHONE_DAILY_STATUSES.has(input.status)) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.status is not supported`);
+  }
+  if (!PHONE_DAILY_OUTCOMES_BY_STATUS.get(input.status).has(input.outcome)) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.outcome does not match status ${input.status}`);
+  }
+  if (!PHONE_DAILY_VERIFICATIONS.has(input.verification)) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.verification is not supported`);
+  }
+  const hasValue = Object.hasOwn(input, "value");
+  if (input.status === "PASS") {
+    if (!hasValue || typeof input.value !== "number" || !Number.isFinite(input.value) || input.value < 0) {
+      throw new HttpError(400, "INVALID_REQUEST", `${path}.value must be a non-negative number when status is PASS`);
+    }
+    if (metric === "phone_step_count" && !Number.isSafeInteger(input.value)) {
+      throw new HttpError(400, "INVALID_REQUEST", `${path}.value must be an integer for phone_step_count`);
+    }
+  } else if (hasValue) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.value must be absent unless status is PASS`);
+  }
+  if (input.raw_error_code !== undefined && input.raw_error_code !== null) {
+    expectString(input.raw_error_code, `${path}.raw_error_code`, { max: 128 });
+  }
+  if (input.raw_error_message !== undefined && input.raw_error_message !== null) {
+    expectString(input.raw_error_message, `${path}.raw_error_message`, { max: 2048 });
+  }
+}
+
+function validateDailySummaryBatch(input) {
+  if (!isPlainObject(input)) throw new HttpError(400, "INVALID_REQUEST", "body must be an object");
+  const allowed = new Set(["batch_id", "producer", "sent_at", "summaries"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) {
+    throw new HttpError(400, "INVALID_REQUEST", `body contains unknown fields: ${unknown.sort().join(", ")}`);
+  }
+  expectString(input.batch_id, "body.batch_id");
+  expectString(input.producer, "body.producer");
+  if (input.sent_at !== undefined && input.sent_at !== null) expectEpoch(input.sent_at, "body.sent_at");
+  if (!Array.isArray(input.summaries) || input.summaries.length < 1 || input.summaries.length > 50) {
+    throw new HttpError(400, "INVALID_REQUEST", "body.summaries must contain between 1 and 50 summaries");
+  }
+  input.summaries.forEach((summary, index) => validateDailySummary(summary, `body.summaries[${index}]`));
+  const keys = input.summaries.map((summary) => `${summary.source}\u0000${summary.metric}\u0000${summary.source_day}`);
+  if (new Set(keys).size !== keys.length) {
+    throw new HttpError(400, "INVALID_REQUEST", "body.summaries contains duplicate source/metric/source_day keys");
+  }
+  return input;
+}
+
 function json(statusCode, body) {
   return new Response(JSON.stringify(body), {
     status: statusCode,
@@ -152,21 +285,23 @@ async function readBody(request) {
   }
 }
 
-async function handleIngest(request, env, now) {
+async function handleIngest(request, env, now, { validate, targetPath, itemKey }) {
   const token = request.headers.get("x-akari-bridge-token") || "";
-  if (!env.INGEST_TOKEN || token !== env.INGEST_TOKEN) {
+  const expectedToken = itemKey === "summaries" ? env.PHONE_INGEST_TOKEN : env.INGEST_TOKEN;
+  if (!expectedToken || token !== expectedToken) {
     return failure(401, "UNAUTHORIZED", "a valid X-Akari-Bridge-Token is required", now);
   }
   const { raw, parsed } = await readBody(request);
-  const batch = validateBatch(parsed);
+  const batch = validate(parsed);
+  const itemCount = batch[itemKey].length;
   const payloadHash = await sha256Hex(raw);
 
   const existing = await env.DB.prepare(
-    "SELECT payload_hash, received_at FROM relay_batches WHERE batch_id = ?"
+    "SELECT payload_hash, received_at, target_path FROM relay_batches WHERE batch_id = ?"
   ).bind(batch.batch_id).first();
 
   if (existing) {
-    if (existing.payload_hash !== payloadHash) {
+    if (existing.payload_hash !== payloadHash || existing.target_path !== targetPath) {
       return failure(
         409,
         "BATCH_ID_CONFLICT",
@@ -180,8 +315,9 @@ async function handleIngest(request, env, now) {
       generated_at: now,
       data: {
         batch_id: batch.batch_id,
-        accepted: batch.events.length,
+        accepted: itemCount,
         duplicates: 0,
+        ...(itemKey === "summaries" ? { stale: 0 } : {}),
         received_at: existing.received_at,
         replayed: true,
       },
@@ -189,8 +325,8 @@ async function handleIngest(request, env, now) {
   }
 
   await env.DB.prepare(
-    "INSERT INTO relay_batches (batch_id, producer, sent_at, received_at, payload_hash, payload) VALUES (?, ?, ?, ?, ?, ?)"
-  ).bind(batch.batch_id, batch.producer, batch.sent_at ?? null, now, payloadHash, raw).run();
+    "INSERT INTO relay_batches (batch_id, producer, sent_at, received_at, payload_hash, payload, target_path) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  ).bind(batch.batch_id, batch.producer, batch.sent_at ?? null, now, payloadHash, raw, targetPath).run();
 
   return json(202, {
     ok: true,
@@ -198,8 +334,9 @@ async function handleIngest(request, env, now) {
     generated_at: now,
     data: {
       batch_id: batch.batch_id,
-      accepted: batch.events.length,
+      accepted: itemCount,
       duplicates: 0,
+      ...(itemKey === "summaries" ? { stale: 0 } : {}),
       received_at: now,
       replayed: false,
     },
@@ -211,7 +348,7 @@ async function handlePending(request, env, url, now) {
   if (!/^\d+$/.test(rawLimit)) return failure(400, "INVALID_QUERY", "limit must be an integer", now);
   const limit = Math.min(Math.max(Number(rawLimit), 1), 200);
   const rows = await env.DB.prepare(
-    "SELECT row_id, batch_id, producer, sent_at, received_at, payload FROM relay_batches ORDER BY row_id ASC LIMIT ?"
+    "SELECT row_id, batch_id, producer, sent_at, received_at, payload, target_path FROM relay_batches ORDER BY row_id ASC LIMIT ?"
   ).bind(limit).all();
   const batches = (rows.results || []).map((row) => ({
     row_id: row.row_id,
@@ -220,6 +357,7 @@ async function handlePending(request, env, url, now) {
     sent_at: row.sent_at,
     received_at: row.received_at,
     payload: JSON.parse(row.payload),
+    target_path: row.target_path,
   }));
   return json(200, {
     ok: true,
@@ -274,7 +412,18 @@ export default {
         return json(200, { ok: true, service: "akari-pulse-relay", status: "PASS", generated_at: now });
       }
       if (request.method === "POST" && url.pathname === "/v1/health/batches") {
-        return await handleIngest(request, env, now);
+        return await handleIngest(request, env, now, {
+          validate: validateBatch,
+          targetPath: "/v1/health/batches",
+          itemKey: "events",
+        });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/health/daily-summaries") {
+        return await handleIngest(request, env, now, {
+          validate: validateDailySummaryBatch,
+          targetPath: "/v1/health/daily-summaries",
+          itemKey: "summaries",
+        });
       }
       if (url.pathname.startsWith("/v1/relay/")) {
         if (!env.ADMIN_TOKEN || bearerToken(request) !== env.ADMIN_TOKEN) {

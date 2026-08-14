@@ -1,7 +1,8 @@
 // Drain the Cloudflare relay buffer into the local Akari Health service.
-// Pulls pending watch batches from the relay, re-POSTs each unchanged payload to the
-// local /v1/health/batches route, and deletes a relay row only after the local service
-// acknowledged that exact batch. Run it manually or from a scheduled task.
+// Pulls pending watch-event or phone daily-summary batches from the relay, re-POSTs
+// each unchanged payload to its recorded local route, and deletes a relay row only
+// after the local service acknowledged that exact batch. Run it manually or from a
+// scheduled task.
 //
 // Environment:
 //   AKARI_RELAY_URL          default https://pulse.example.com
@@ -40,9 +41,18 @@ async function fetchPending() {
 }
 
 async function ingestLocally(batch) {
+  const targetPath = batch.target_path || "/v1/health/batches";
+  if (!["/v1/health/batches", "/v1/health/daily-summaries"].includes(targetPath)) {
+    throw new Error(`relay returned unsupported target path for ${batch.batch_id}: ${targetPath}`);
+  }
+  const isDailySummary = targetPath === "/v1/health/daily-summaries";
+  const itemCount = isDailySummary ? batch.payload.summaries?.length : batch.payload.events?.length;
+  if (!Number.isInteger(itemCount) || itemCount < 1) {
+    throw new Error(`relay returned an invalid payload for ${batch.batch_id}`);
+  }
   const headers = { "content-type": "application/json" };
   if (healthToken) headers.authorization = `Bearer ${healthToken}`;
-  const response = await fetch(`${healthUrl}/v1/health/batches`, {
+  const response = await fetch(`${healthUrl}${targetPath}`, {
     method: "POST",
     headers,
     body: JSON.stringify(batch.payload),
@@ -51,21 +61,24 @@ async function ingestLocally(batch) {
   const data = body && body.data;
   const accepted = data && data.accepted;
   const duplicates = data && data.duplicates;
+  const stale = isDailySummary ? data && data.stale : 0;
   const countsValid =
-    Number.isInteger(accepted) && accepted >= 0 && Number.isInteger(duplicates) && duplicates >= 0;
+    Number.isInteger(accepted) && accepted >= 0 &&
+    Number.isInteger(duplicates) && duplicates >= 0 &&
+    Number.isInteger(stale) && stale >= 0;
   if (
     !response.ok ||
     body.ok !== true ||
     !data ||
     data.batch_id !== batch.payload.batch_id ||
     !countsValid ||
-    accepted + duplicates !== batch.payload.events.length
+    accepted + duplicates + stale !== itemCount
   ) {
     throw new Error(
       `local ingest not acknowledged for ${batch.payload.batch_id} (${response.status}): ${JSON.stringify(body.error || body).slice(0, 300)}`
     );
   }
-  return { accepted, duplicates, replayed: Boolean(data.replayed) };
+  return { accepted, duplicates, stale, replayed: Boolean(data.replayed), targetPath, itemCount };
 }
 
 async function confirmDrained(rowIds) {
@@ -85,7 +98,7 @@ async function confirmDrained(rowIds) {
 }
 
 let totalBatches = 0;
-let totalEvents = 0;
+let totalItems = 0;
 
 for (;;) {
   const pending = await fetchPending();
@@ -96,9 +109,9 @@ for (;;) {
     const ack = await ingestLocally(batch);
     drainedRowIds.push(batch.row_id);
     totalBatches += 1;
-    totalEvents += batch.payload.events.length;
+    totalItems += ack.itemCount;
     console.log(
-      `ingested ${batch.payload.batch_id}: events=${batch.payload.events.length} accepted=${ack.accepted} duplicates=${ack.duplicates}${ack.replayed ? " (replayed)" : ""}`
+      `ingested ${batch.payload.batch_id}: target=${ack.targetPath} items=${ack.itemCount} accepted=${ack.accepted} duplicates=${ack.duplicates} stale=${ack.stale}${ack.replayed ? " (replayed)" : ""}`
     );
   }
   const deleted = await confirmDrained(drainedRowIds);
@@ -106,4 +119,4 @@ for (;;) {
   if (pending.length < 50) break;
 }
 
-console.log(`drain complete: ${totalBatches} batch(es), ${totalEvents} event(s)`);
+console.log(`drain complete: ${totalBatches} batch(es), ${totalItems} item(s)`);

@@ -108,11 +108,19 @@ class BridgeViewModel(
 
     fun readPhoneHealth() {
         viewModelScope.launch {
-            val result = runtime.phoneHealth.refresh()
-            notice.value = UiNotice(
-                "phone health ${result.status.name} · ${result.outcome.name.lowercase()}",
-                result.status == PhoneHealthStatus.ERROR,
-            )
+            try {
+                val result = runtime.phoneHealth.refresh()
+                SyncScheduler.enqueueNow(getApplication(), expedited = true)
+                notice.value = UiNotice(
+                    "phone health ${result.status.name} · persisted and uplink queued",
+                    result.status == PhoneHealthStatus.ERROR,
+                )
+            } catch (error: Exception) {
+                notice.value = UiNotice(
+                    "phone health persistence failed · ${error.message ?: error.javaClass.simpleName}",
+                    true,
+                )
+            }
         }
     }
 

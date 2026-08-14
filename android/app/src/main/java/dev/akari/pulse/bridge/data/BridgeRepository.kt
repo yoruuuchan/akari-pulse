@@ -8,12 +8,15 @@ import dev.akari.pulse.bridge.diagnostics.DiagnosticsStore
 import dev.akari.pulse.bridge.diagnostics.TransportKind
 import dev.akari.pulse.bridge.network.AkariHealthClient
 import dev.akari.pulse.bridge.network.ApiFailure
+import dev.akari.pulse.bridge.phonehealth.PhoneTodayActivity
+import dev.akari.pulse.bridge.phonehealth.toDailySummaryRecords
 import java.security.MessageDigest
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 
 data class IngressAcknowledgement(
@@ -46,6 +49,75 @@ class BridgeRepository(
     fun observeQueueStats(): Flow<QueueStats> = dao.observeQueueStats()
 
     fun observeRecentEvents(limit: Int = 20): Flow<List<HealthEventEntity>> = dao.observeRecentEvents(limit)
+
+    suspend fun persistPhoneDailySummary(activity: PhoneTodayActivity) {
+        val summaries = activity.toDailySummaryRecords()
+        val createdAt = now()
+        val batchId = "phone-daily-${UUID.randomUUID()}"
+        val payload = buildJsonObject {
+            put("batch_id", batchId)
+            put("producer", PRODUCER)
+            put("sent_at", createdAt)
+            put(
+                "summaries",
+                JsonArray(
+                    summaries.map { summary ->
+                        buildJsonObject {
+                            put("source", summary.source)
+                            put("metric", summary.metric)
+                            put("source_day", summary.sourceDay)
+                            put("source_timezone", summary.sourceTimezone)
+                            summary.valueJson?.let { valueJson ->
+                                put("value", HealthContract.json.parseToJsonElement(valueJson))
+                            }
+                            put("unit", summary.unit)
+                            put("sampled_at", summary.sampledAtText)
+                            put("source_timestamp_available", summary.sourceTimestampAvailable)
+                            put("status", summary.status)
+                            put("outcome", summary.outcome)
+                            put("verification", summary.verification)
+                            summary.rawErrorCode?.let { put("raw_error_code", it) }
+                            summary.rawErrorMessage?.let { put("raw_error_message", it) }
+                        }
+                    },
+                ),
+            )
+        }
+        database.withTransaction {
+            dao.upsertPhoneDailySummaries(
+                summaries.map { summary ->
+                    PhoneDailySummaryEntity(
+                        source = summary.source,
+                        metric = summary.metric,
+                        sourceDay = summary.sourceDay,
+                        sourceTimezone = summary.sourceTimezone,
+                        valueJson = summary.valueJson,
+                        unit = summary.unit,
+                        sampledAt = summary.sampledAt,
+                        sampledAtText = summary.sampledAtText,
+                        sourceTimestampAvailable = summary.sourceTimestampAvailable,
+                        status = summary.status,
+                        outcome = summary.outcome,
+                        verification = summary.verification,
+                        rawErrorCode = summary.rawErrorCode,
+                        rawErrorMessage = summary.rawErrorMessage,
+                    )
+                },
+            )
+            dao.insertPhoneDailySummaryUpload(
+                PhoneDailySummaryUploadEntity(
+                    batchId = batchId,
+                    createdAt = createdAt,
+                    sentAt = createdAt,
+                    source = summaries.first().source,
+                    sourceDay = summaries.first().sourceDay,
+                    sampledAt = summaries.first().sampledAt,
+                    summaryCount = summaries.size,
+                    payloadJson = payload.toString(),
+                ),
+            )
+        }
+    }
 
     suspend fun ingestWatchBatch(rawJson: String, sourceAdapter: TransportKind): IngressAcknowledgement {
         val batch = HealthContract.parseBatch(rawJson)
@@ -157,6 +229,43 @@ class BridgeRepository(
             val retryable = (error as? ApiFailure)?.retryable == true
             val message = (error.message ?: error.javaClass.simpleName).take(2048)
             dao.markBatchError(claimed.batch.batchId, now(), message)
+            diagnostics.syncFailed(now(), message)
+            SyncOneResult.Failure(retryable, message)
+        }
+    }
+
+    suspend fun syncOnePhoneDailySummary(): SyncOneResult {
+        val batch = dao.oldestOpenPhoneDailySummaryUpload() ?: return SyncOneResult.NoWork
+        val attemptedAt = now()
+        dao.markPhoneDailySummaryUploadAttempted(batch.batchId, attemptedAt)
+        diagnostics.syncAttempt(attemptedAt)
+        return try {
+            val payload = HealthContract.json.parseToJsonElement(batch.payloadJson).jsonObject
+            val acknowledgement = client.uploadDailySummaries(payload)
+            if (
+                acknowledgement.accepted < 0 ||
+                acknowledgement.duplicates < 0 ||
+                acknowledgement.stale < 0 ||
+                acknowledgement.accepted + acknowledgement.duplicates + acknowledgement.stale != batch.summaryCount
+            ) {
+                throw ApiFailure(false, "server acknowledgement count does not match the daily-summary batch")
+            }
+            val completedAt = now()
+            database.withTransaction {
+                dao.markPhoneDailySummariesSynced(
+                    source = batch.source,
+                    sourceDay = batch.sourceDay,
+                    sampledAt = batch.sampledAt,
+                    syncedAt = completedAt,
+                )
+                dao.markPhoneDailySummaryUploadComplete(batch.batchId, completedAt)
+            }
+            diagnostics.syncSucceeded(completedAt)
+            SyncOneResult.Success(batch.summaryCount)
+        } catch (error: Exception) {
+            val retryable = (error as? ApiFailure)?.retryable == true
+            val message = (error.message ?: error.javaClass.simpleName).take(2048)
+            dao.markPhoneDailySummaryUploadError(batch.batchId, now(), message)
             diagnostics.syncFailed(now(), message)
             SyncOneResult.Failure(retryable, message)
         }

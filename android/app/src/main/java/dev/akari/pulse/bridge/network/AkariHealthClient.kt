@@ -29,6 +29,15 @@ data class UploadAcknowledgement(
     val replayed: Boolean,
 )
 
+data class DailySummaryUploadAcknowledgement(
+    val batchId: String,
+    val accepted: Int,
+    val duplicates: Int,
+    val stale: Int,
+    val receivedAt: Long,
+    val replayed: Boolean,
+)
+
 class ApiFailure(
     val retryable: Boolean,
     message: String,
@@ -104,6 +113,49 @@ class AkariHealthClient(
         root["data"]?.jsonObject?.get("sessions")?.jsonArray?.size
             ?: throw ApiFailure(false, "server response is missing active sessions")
     }
+
+    suspend fun uploadDailySummaries(payload: JsonObject): DailySummaryUploadAcknowledgement =
+        withContext(Dispatchers.IO) {
+            val config = preferences.load()
+            val baseUrl = ServerUrlPolicy.validate(config.serverBaseUrl, config.allowTailnetHttp)
+            val expectedBatchId = payload.getValue("batch_id").jsonPrimitive.content
+            val request = Request.Builder()
+                .url("$baseUrl/v1/health/daily-summaries")
+                .post(payload.toString().toRequestBody(mediaType))
+                .header("Accept", "application/json")
+                .apply {
+                    config.serverToken?.takeIf { it.isNotEmpty() }?.let { token ->
+                        header("Authorization", "Bearer $token")
+                        header("X-Akari-Bridge-Token", token)
+                    }
+                }
+                .build()
+            executeJson(request).let { root ->
+                if (root["ok"]?.jsonPrimitive?.booleanOrNull != true) {
+                    throw ApiFailure(false, "server response did not confirm success")
+                }
+                val data = root["data"]?.jsonObject
+                    ?: throw ApiFailure(false, "server response is missing data")
+                val batchId = data["batch_id"]?.jsonPrimitive?.content
+                    ?: throw ApiFailure(false, "server response is missing batch_id")
+                if (batchId != expectedBatchId) {
+                    throw ApiFailure(false, "server acknowledged a different batch_id")
+                }
+                DailySummaryUploadAcknowledgement(
+                    batchId = batchId,
+                    accepted = data["accepted"]?.jsonPrimitive?.intOrNull
+                        ?: throw ApiFailure(false, "server response is missing accepted"),
+                    duplicates = data["duplicates"]?.jsonPrimitive?.intOrNull
+                        ?: throw ApiFailure(false, "server response is missing duplicates"),
+                    stale = data["stale"]?.jsonPrimitive?.intOrNull
+                        ?: throw ApiFailure(false, "server response is missing stale"),
+                    receivedAt = data["received_at"]?.jsonPrimitive?.longOrNull
+                        ?: throw ApiFailure(false, "server response is missing received_at"),
+                    replayed = data["replayed"]?.jsonPrimitive?.booleanOrNull
+                        ?: throw ApiFailure(false, "server response is missing replayed"),
+                )
+            }
+        }
 
     private fun executeJson(request: Request): JsonObject {
         try {

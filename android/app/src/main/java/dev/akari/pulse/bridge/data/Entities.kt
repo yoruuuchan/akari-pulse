@@ -102,6 +102,73 @@ data class WatchBatchEntity(
     val duplicateCount: Int,
 )
 
+@Entity(
+    tableName = "phone_daily_summaries",
+    primaryKeys = ["source", "metric", "source_day"],
+    indices = [
+        Index(value = ["source_day"]),
+        Index(value = ["sampled_at_ms"]),
+        Index(value = ["synced_at_ms"]),
+    ],
+)
+data class PhoneDailySummaryEntity(
+    val source: String,
+    val metric: String,
+    @ColumnInfo(name = "source_day")
+    val sourceDay: String,
+    @ColumnInfo(name = "source_timezone")
+    val sourceTimezone: String,
+    @ColumnInfo(name = "value_json")
+    val valueJson: String?,
+    val unit: String,
+    @ColumnInfo(name = "sampled_at_ms")
+    val sampledAt: Long,
+    @ColumnInfo(name = "sampled_at")
+    val sampledAtText: String,
+    @ColumnInfo(name = "source_timestamp_available")
+    val sourceTimestampAvailable: Boolean,
+    val status: String,
+    val outcome: String,
+    val verification: String,
+    @ColumnInfo(name = "raw_error_code")
+    val rawErrorCode: String?,
+    @ColumnInfo(name = "raw_error_message")
+    val rawErrorMessage: String?,
+    @ColumnInfo(name = "synced_at_ms")
+    val syncedAt: Long? = null,
+)
+
+@Entity(
+    tableName = "phone_daily_summary_uploads",
+    indices = [Index(value = ["completed_at_ms"]), Index(value = ["created_at_ms"])],
+)
+data class PhoneDailySummaryUploadEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "batch_id")
+    val batchId: String,
+    @ColumnInfo(name = "created_at_ms")
+    val createdAt: Long,
+    @ColumnInfo(name = "sent_at_ms")
+    val sentAt: Long,
+    val source: String,
+    @ColumnInfo(name = "source_day")
+    val sourceDay: String,
+    @ColumnInfo(name = "sampled_at_ms")
+    val sampledAt: Long,
+    @ColumnInfo(name = "summary_count")
+    val summaryCount: Int,
+    @ColumnInfo(name = "payload_json")
+    val payloadJson: String,
+    @ColumnInfo(name = "attempt_count")
+    val attemptCount: Int = 0,
+    @ColumnInfo(name = "last_attempt_at_ms")
+    val lastAttemptAt: Long? = null,
+    @ColumnInfo(name = "last_error")
+    val lastError: String? = null,
+    @ColumnInfo(name = "completed_at_ms")
+    val completedAt: Long? = null,
+)
+
 data class QueueStats(
     val pendingCount: Long,
     val syncedCount: Long,

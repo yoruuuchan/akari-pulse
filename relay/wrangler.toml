@@ -14,4 +14,5 @@ database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 
 # Secrets (set via `wrangler secret put`, never committed):
 #   INGEST_TOKEN  - watch sends it as X-Akari-Bridge-Token on POST /v1/health/batches
+#   PHONE_INGEST_TOKEN - Android sends it on POST /v1/health/daily-summaries
 #   ADMIN_TOKEN   - drain client sends it as Authorization: Bearer on /v1/relay/* routes

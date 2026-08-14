@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://akari.local/schemas/phone-daily-summary.schema.json",
+  "title": "Akari Pulse phone daily summary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source",
+    "metric",
+    "source_day",
+    "source_timezone",
+    "unit",
+    "sampled_at",
+    "source_timestamp_available",
+    "status",
+    "outcome",
+    "verification"
+  ],
+  "properties": {
+    "source": {
+      "const": "vivo_phone"
+    },
+    "metric": {
+      "enum": ["phone_step_count", "phone_distance", "phone_calories"]
+    },
+    "source_day": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "source_timezone": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "value": {
+      "type": "number",
+      "minimum": 0
+    },
+    "unit": {
+      "enum": ["count", "m", "kcal"]
+    },
+    "sampled_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_timestamp_available": {
+      "const": false
+    },
+    "status": {
+      "enum": ["PASS", "NO_DATA", "ERROR"]
+    },
+    "outcome": {
+      "enum": [
+        "PROVIDER_CALL_SUCCEEDED",
+        "PROVIDER_NO_DATA",
+        "PROVIDER_CALL_FAILED",
+        "PARSE_FAILED"
+      ]
+    },
+    "verification": {
+      "enum": ["VERIFIED", "VERIFIED_FORMATTED_DISPLAY", "UNVERIFIED"]
+    },
+    "raw_error_code": {
+      "type": ["string", "null"],
+      "maxLength": 128
+    },
+    "raw_error_message": {
+      "type": ["string", "null"],
+      "maxLength": 2048
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": { "const": "PASS" }
+        }
+      },
+      "then": {
+        "required": ["value"]
+      },
+      "else": {
+        "not": {
+          "required": ["value"]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric": { "const": "phone_step_count" }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": { "const": "count" },
+          "value": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": { "const": "PASS" }
+        }
+      },
+      "then": {
+        "properties": {
+          "outcome": { "const": "PROVIDER_CALL_SUCCEEDED" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": { "const": "NO_DATA" }
+        }
+      },
+      "then": {
+        "properties": {
+          "outcome": { "const": "PROVIDER_NO_DATA" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": { "const": "ERROR" }
+        }
+      },
+      "then": {
+        "properties": {
+          "outcome": { "enum": ["PROVIDER_CALL_FAILED", "PARSE_FAILED"] }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric": { "const": "phone_distance" }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": { "const": "m" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "metric": { "const": "phone_calories" }
+        }
+      },
+      "then": {
+        "properties": {
+          "unit": { "const": "kcal" }
+        }
+      }
+    }
+  ]
+}

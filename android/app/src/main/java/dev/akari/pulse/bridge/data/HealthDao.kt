@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -16,6 +17,12 @@ interface HealthDao {
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertWatchBatch(batch: WatchBatchEntity)
+
+    @Upsert
+    suspend fun upsertPhoneDailySummaries(summaries: List<PhoneDailySummaryEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertPhoneDailySummaryUpload(batch: PhoneDailySummaryUploadEntity)
 
     @Query("SELECT * FROM watch_batches WHERE batch_id = :batchId")
     suspend fun watchBatch(batchId: String): WatchBatchEntity?
@@ -76,4 +83,34 @@ interface HealthDao {
         "UPDATE health_events SET synced_at_ms = :syncedAt WHERE upload_batch_id = :batchId AND synced_at_ms IS NULL",
     )
     suspend fun markBatchEventsSynced(batchId: String, syncedAt: Long): Int
+
+    @Query(
+        "SELECT * FROM phone_daily_summary_uploads WHERE completed_at_ms IS NULL ORDER BY created_at_ms ASC LIMIT 1",
+    )
+    suspend fun oldestOpenPhoneDailySummaryUpload(): PhoneDailySummaryUploadEntity?
+
+    @Query(
+        "UPDATE phone_daily_summary_uploads SET attempt_count = attempt_count + 1, last_attempt_at_ms = :attemptedAt, last_error = NULL WHERE batch_id = :batchId",
+    )
+    suspend fun markPhoneDailySummaryUploadAttempted(batchId: String, attemptedAt: Long)
+
+    @Query(
+        "UPDATE phone_daily_summary_uploads SET last_error = :message, last_attempt_at_ms = :attemptedAt WHERE batch_id = :batchId",
+    )
+    suspend fun markPhoneDailySummaryUploadError(batchId: String, attemptedAt: Long, message: String)
+
+    @Query(
+        "UPDATE phone_daily_summary_uploads SET completed_at_ms = :completedAt, last_error = NULL WHERE batch_id = :batchId",
+    )
+    suspend fun markPhoneDailySummaryUploadComplete(batchId: String, completedAt: Long)
+
+    @Query(
+        "UPDATE phone_daily_summaries SET synced_at_ms = :syncedAt WHERE source = :source AND source_day = :sourceDay AND sampled_at_ms = :sampledAt",
+    )
+    suspend fun markPhoneDailySummariesSynced(
+        source: String,
+        sourceDay: String,
+        sampledAt: Long,
+        syncedAt: Long,
+    ): Int
 }

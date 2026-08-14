@@ -28,7 +28,7 @@ class AkariPulseApplication : Application() {
         val database = AkariDatabase.create(this)
         val client = AkariHealthClient(preferences)
         val repository = BridgeRepository(database, client, diagnostics)
-        val phoneHealth = PhoneHealthController(VivoTodayActivityReader(this))
+        val phoneHealth = PhoneHealthController(VivoTodayActivityReader(this), repository)
         val officialRpc = OfficialRpcReceiverAdapter(
             context = this,
             preferences = preferences,

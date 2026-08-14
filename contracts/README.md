@@ -94,6 +94,46 @@ Content-Type: application/json
 
 The Android queue marks an event uploaded only after a matching successful acknowledgement. WorkManager retry/backoff never fabricates an acknowledgement. A `409 BATCH_ID_CONFLICT` or `409 EVENT_ID_CONFLICT` is a visible terminal diagnostic requiring investigation, not an automatic drop.
 
+## Phone daily summary to service
+
+The vivo phone provider returns one cumulative summary for a source calendar day, not an event stream. Android therefore persists and uploads it under the separate contracts [`phone-daily-summary.schema.json`](phone-daily-summary.schema.json) and [`phone-daily-summary-batch.schema.json`](phone-daily-summary-batch.schema.json):
+
+```json
+{
+  "batch_id": "phone-daily-<stable UUID>",
+  "producer": "akari-pulse-android",
+  "sent_at": 1786674600000,
+  "summaries": [
+    {
+      "source": "vivo_phone",
+      "metric": "phone_step_count",
+      "source_day": "2026-08-14",
+      "source_timezone": "Asia/Shanghai",
+      "value": 3200,
+      "unit": "count",
+      "sampled_at": "2026-08-14T10:00:00+08:00",
+      "source_timestamp_available": false,
+      "status": "PASS",
+      "outcome": "PROVIDER_CALL_SUCCEEDED",
+      "verification": "VERIFIED"
+    }
+  ]
+}
+```
+
+`source_day` is the immutable partition key. `sampled_at` is only the time Akari observed the provider result; it is never treated as the last-step time or re-bucketed through a caller timezone. `phone_step_count`, `phone_distance`, and `phone_calories` remain distinct from watch metrics.
+
+Android uses `source + metric + source_day` as the Room key. A later observation for the same key replaces the current summary: `5 → 100 → 3200` ends at `3200`, never `3305`. A successful zero remains `PASS` with value `0`; `NO_DATA` and `ERROR` omit `value`. Every read also creates an immutable outbox batch so retries use the same `batch_id` and byte-stable JSON.
+
+Production upload is:
+
+```text
+POST https://pulse.yoru-and-akari.dev/v1/health/daily-summaries
+X-Akari-Bridge-Token: <PHONE_INGEST_TOKEN>
+```
+
+The relay stores the batch before acknowledging it and the single VPS drain forwards it unchanged to the same backend path. A daily-summary acknowledgement satisfies `accepted + duplicates + stale == summaries.length`; `stale` means a delayed older observation was durably accepted as a batch but did not replace a newer backend row.
+
 ## Status vocabulary
 
 | Status | Meaning |
@@ -136,13 +176,15 @@ ZERO_SENTINEL`, preserving the raw payload in `raw_error_message` as evidence.
 
 ## Layer summary: `NOT_APPLICABLE`
 
-The `phone_receive`, `phone_persistence`, and `uplink` layers only ever
-produce diagnostic records when the Android bridge is on the active path.
-On the current relay-only route they are structurally never populated.
+The `diagnostic_phone_receive`, `diagnostic_phone_persistence`, and
+`diagnostic_uplink` event metrics describe the Android watch-receiver fallback.
+On the active watch-direct relay route they are structurally never populated.
 `/v1/status.data.layers.<layer>` reports `NOT_APPLICABLE` (with an
 explanatory `note`) when zero records exist for such a layer, instead of the
 misleading `NO_DATA`. If a real record ever arrives (the bridge is re-enabled
 as a fallback receiver), the real status takes over from the next request.
+The independent phone daily-summary path exposes its per-metric state and
+`last_daily_summary_ingest`; it does not fabricate watch-receiver diagnostics.
 
 ## Timestamps
 
