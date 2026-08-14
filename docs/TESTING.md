@@ -103,6 +103,26 @@ No private key is copied into the repository; the debug APK uses the host's norm
 
 `adb devices` returned no connected device during host verification. Therefore APK install, launch, official RPC initialization, vivo OEM background policy, and disconnect/retry behavior are not marked passed.
 
+### 2026-08-14 phone daily-summary extension
+
+The phone persistence/uplink extension was verified separately from the older Android host-build record above:
+
+```powershell
+Set-Location .\android
+.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:compileDebugAndroidTestKotlin --console=plain
+```
+
+Result: `BUILD SUCCESSFUL`; 68 Gradle tasks completed. The root `npm test` run also passed all three workspaces: server 11/11, real stdio MCP 1/1, and Cloudflare relay 2/2. The server suite includes same-day cumulative replacement (`5 -> 100 -> 3200`, final value 3200), stale retry, exact duplicate, real-zero PASS, NO_DATA/ERROR, caller-timezone non-rebucketing, and simultaneous phone/watch visibility.
+
+The latest debug APK was installed with `adb install -r`, preserving the original install time and application data. A stopped-app version-1 database backup was captured before installation. Opening the upgraded app migrated that database to version 2 without destructive fallback. The compiled instrumentation APK was then run directly so the test harness did not clear the configured application data:
+
+```powershell
+adb install -r .\app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk
+adb shell am instrument -w -r dev.akari.pulse.bridge.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Result: `OK (1 test)`. The migration test preserves a schema-1 watch row and validates schema-2 phone upsert semantics. Two real provider reads subsequently created two completed immutable outboxes and one later current row per phone metric; relay drain, production SQLite fields, official Streamable HTTP MCP calls, and the unchanged watch record count are documented in [REAL_DEVICE_RESULTS.md](REAL_DEVICE_RESULTS.md).
+
 ## BlueOS build and package validation
 
 The watch source is compiled with the BlueOS Studio 2.0.5 bundled Node `18.20.3`, `blueos-pack 1.0.9-beta.24`, and compiler commit `2b772929`. From `watch`, the equivalent packager operation is:

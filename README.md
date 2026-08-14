@@ -2,7 +2,7 @@
 
 English | [中文](README.zh-CN.md)
 
-Research notes and a working reference implementation for getting health data off a vivo WATCH GT (first-generation Bluetooth model, `WA2456C`, BlueOS 3.0) into a self-hosted backend and MCP server. The full chain — watch RPK → Cloudflare relay → drain into a local Node.js service → SQLite → MCP over stdio and Streamable HTTP — was verified end-to-end on a real device on 2026-08-12; the exact evidence is in [docs/REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md).
+Research notes and a working reference implementation for getting health data off a vivo WATCH GT (first-generation Bluetooth model, `WA2456C`, BlueOS 3.0) into a self-hosted backend and MCP server. The full watch chain — watch RPK → Cloudflare relay → drain into a local Node.js service → SQLite → MCP over stdio and Streamable HTTP — was verified end-to-end on a real device on 2026-08-12. A separate vivo phone-local natural-day summary chain — provider → Android Room/outbox → independently authenticated relay route → SQLite → MCP — was verified end-to-end on 2026-08-14; exact evidence is in [docs/REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md).
 
 Status: reference / research. Published as-is with no maintenance or support promise. Not affiliated with, endorsed by, or sponsored by vivo. Every endpoint, database ID, and token in the runnable code and configs has been replaced with a placeholder (`REPLACE_WITH_*` or `pulse.example.com`) — bring your own Cloudflare Worker, D1 database, VPS, and tunnel; nothing points at anyone else's infrastructure by default. Narrative documentation still names the domains the author's own deployment used (`pulse.yoru-and-akari.dev`, `pulse-mcp.yoru-and-akari.dev`) because they are part of the verified-deployment story on 2026-08-12.
 
@@ -22,7 +22,10 @@ WA2456C / BlueOS 3.0
   -> independent Akari Health MCP (stdio / Streamable HTTP)
   -> ChatGPT / Claude
 
-(Android bridge retained in-tree as a fallback receiver only)
+vivo phone-local today activity
+  -> Android Room current rows + immutable outbox
+  -> separate phone-authenticated Worker route
+  -> daily summaries in the same backend and MCP, side by side with watch events
 ```
 
 The repository contains real watch, Android, service, and MCP implementations. It does not contain demo health values, vivo developer credentials, account tokens, or private signing keys. A host build is not reported as a real-watch success. Confirmed `WA2456C / DPD2346C_A_1.54.5` observations and unresolved reboot boundaries are recorded separately from host evidence in [REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md).
@@ -34,11 +37,11 @@ The repository contains real watch, Android, service, and MCP implementations. I
 | BlueOS watch app | `0.1.5` evidence-and-boundary RPK built with the BlueOS Studio toolchain (superset of `0.1.4`; adds ZERO_SENTINEL and raw-payload evidence in `collect stats`, per-metric layer breakdown, and a new `probe sleep` button) | `0.1.2` passed the full isolated health chain (3/3 cold-start full-pipeline passes, no reboot); `0.1.3` `net probe` and `send batch https` passed on 2026-08-12; `0.1.4` all three collect+sync buttons verified 2026-08-12 — real nonzero HR, SpO2, stress, resting HR landed in the VPS store end-to-end; `0.1.5` (versionCode 6, SHA-256 `C8AFBE32446E30D745CBCFE68C8C7D5DA101B7B58DD78CCD52167C2D7343AE76`, 89,461 bytes) device-verified 2026-08-12: sentinel rule confirmed, SUM-stats and sleep boundaries conclusively established, NOT_APPLICABLE layer semantics live (see [REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md)) |
 | Watch health chain | one-test-per-launch harness | `PASS` — `getRecentSamples([HEART_RATE])` → callback → parse → UI → queue → snapshot → storage is stable; do not rework without new failing evidence |
 | Official BlueXlink RPC | public watch API and official Android AAR integrated | **closed**: `transport init` fails with `code=1001 interconnectfeature error`; support table lists only WATCH 3; vivo `appid`/`encryStr` unobtainable — see [RESEARCH.md](docs/RESEARCH.md) |
-| Cloudflare relay | deployed at `https://pulse.yoru-and-akari.dev`; ingest/replay/conflict/auth smoke-tested | `PASS` 2026-08-12 — the real watch reached the relay over HTTPS (~4 s TLS) and its batch was stored and acknowledged 3 s after `sent_at` |
-| Akari Health service | authenticated routes tested against temporary databases | `PASS` 2026-08-12 — the drained physical-watch batch (2 events) is in the local SQLite store of record |
-| Akari Health MCP | official SDK client lists and invokes all 14 tools | `PASS` 2026-08-12 — `health_latest` returned the physical-watch record through the real stdio MCP |
-| Always-on VPS + remote MCP | deployed on the Tokyo VPS (systemd: service, 2-min drain timer, Streamable-HTTP MCP, Cloudflare Tunnel) | `PASS` 2026-08-12 — official `StreamableHTTPClientTransport` listed 14 tools and returned the watch record via `https://pulse-mcp.yoru-and-akari.dev/mcp/<secret>`; see [deploy/tokyo](deploy/tokyo/README.md) |
-| Android bridge | debug APK built, unit-tested, linted, and signature-checked | fallback only; not on the active path |
+| Cloudflare relay | separate strict watch-event and phone-daily-summary ingest routes; replay/conflict/auth tests | `PASS` — real watch HTTPS on 2026-08-12; real phone daily-summary batches on 2026-08-14 used an independent phone secret and drained back to zero pending rows |
+| Akari Health service | authenticated watch-event and idempotent daily-summary routes tested against temporary databases | `PASS` — 105 established watch records remain; two real phone batches were accepted 3/3 and the later three source-day current rows are stored |
+| Akari Health MCP | official SDK client lists and invokes all 14 tools | `PASS` — `health_today` and `health_steps` expose phone/watch side by side; `health_latest` still returns the physical-watch record |
+| Always-on VPS + remote MCP | deployed on the Tokyo VPS (systemd: service, 2-min drain timer, Streamable-HTTP MCP, Cloudflare Tunnel) | `PASS` — public remote watch verification on 2026-08-12; production MCP reverified 2026-08-14 with protocol `2026-07-28`, 14 tools, backend ingest PASS, and MCP query PASS; see [deploy/tokyo](deploy/tokyo/README.md) |
+| Android app | debug APK built, unit-tested, linted, and Room 1 -> 2 migration-tested | `PASS` 2026-08-14 — in-place vivo upgrade, real 2210-step / 1682.3701171875-m / 98.30199432373047-kcal provider summary, durable Room current rows and two completed immutable outboxes; watch receiver remains an independent fallback |
 
 See [REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md) and [DIAGNOSTICS.md](docs/DIAGNOSTICS.md) for the exact evidence and adaptive one-test-per-launch sequence.
 
@@ -86,7 +89,7 @@ The machine-readable list, APK signer certificate digest, and vendored AAR diges
 akari-pulse/
 |-- watch/       BlueOS health collection, durable queue, HTTPS/RPC adapters, diagnostics UI
 |-- relay/       Cloudflare Worker ingest buffer (pulse.yoru-and-akari.dev) and D1 schema
-|-- android/     fallback bridge: Room inbox/outbox, official vivo RPC receiver, HTTP probe receiver
+|-- android/     phone-local daily summaries plus the fallback watch receiver
 |-- server/      Node.js 24 HTTP service and SQLite persistence
 |-- mcp/         independent MCP (stdio + Streamable HTTP) using the official TypeScript SDK
 |-- deploy/      Tokyo VPS systemd units and runbook (always-on store + remote MCP)
@@ -98,9 +101,11 @@ akari-pulse/
 
 ## Architecture choice
 
-The production route is watch-direct HTTPS: `@blueos.network.fetch` POSTs the batch contract to the Cloudflare relay at `pulse.yoru-and-akari.dev`, which buffers in D1 and is drained into the local Akari Health service by `scripts/drain-relay.mjs`. vivo's official BlueXlink/device RPC pair was the original candidate and is now closed on this hardware: the real `WA2456C` fails at `interconnect` connection time with `code=1001 interconnectfeature error`, the official support table lists only vivo WATCH 3, and the required vivo `appid`/`encryStr` are not obtainable for this project. Evidence and classification live in [RESEARCH.md](docs/RESEARCH.md); the Android bridge remains buildable as a fallback receiver. OrbitV is used for RPK sideloading only and is not treated as a generic bridge API.
+The watch production route remains watch-direct HTTPS: `@blueos.network.fetch` POSTs immutable event batches to the Cloudflare relay at `pulse.yoru-and-akari.dev`, which buffers in D1 and is drained into the local Akari Health service by `scripts/drain-relay.mjs`. Independently, the Android app reads the vivo phone's cumulative natural-day activity summary and posts it through a separately authenticated `/v1/health/daily-summaries` route. vivo's official BlueXlink/device RPC pair was the original watch-to-phone candidate and remains closed on this hardware: the real `WA2456C` fails at `interconnect` connection time with `code=1001 interconnectfeature error`, the official support table lists only vivo WATCH 3, and the required vivo `appid`/`encryStr` are not obtainable for this project. Evidence and classification live in [RESEARCH.md](docs/RESEARCH.md); the Android watch receiver remains buildable as a fallback. OrbitV is used for RPK sideloading only and is not treated as a generic bridge API.
 
 Every transport shares one durable contract. A receiver acknowledges a watch batch only after durable storage (relay: D1 insert; Android: Room transaction), and the watch dequeues only after a matching `batch_id` plus exact accepted/duplicate counts. The relay is drained — rows deleted — only after the local service acknowledges the same batch, so no layer drops data it has not handed off.
+
+Phone daily summaries deliberately use a different contract from watch events. `source_day` and `source_timezone` come from the phone provider and select the calendar day; `sampled_at` is only the bridge observation time and is never treated as a last-step timestamp. PASS/NO_DATA/ERROR and real zero are preserved. Later observations replace the current row for the same `(source, metric, source_day)` while every upload batch remains immutable; phone and watch values are returned separately with no merge or precedence.
 
 The backend is a local Node.js 24 service backed by `node:sqlite`. The MCP calls that service rather than opening the database, exposes read-only raw-health tools plus non-destructive start/stop session metadata actions, and does not modify the existing Akari Surface Desktop MCP.
 
@@ -172,7 +177,7 @@ Install the resulting debug APK with Android Studio or:
 adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 ```
 
-In the app, configure the Akari Health base URL/token. Enter `encryStr` in the secure runtime field only; Android Keystore encrypts it at rest. Start `official vivo rpc` only after the app ID and key exist. The `session notification` controls are explicitly best-effort: dispatch does not confirm watch execution or create the backend session.
+In the app, configure the Akari Health base URL and the phone-specific upload credential in `server bearer token`; Android Keystore encrypts it at rest. `read today activity` persists the three phone daily-summary metrics transactionally and queues `/v1/health/daily-summaries` through WorkManager. Keep this credential separate from the watch relay's `INGEST_TOKEN`. Enter `encryStr` in its own secure runtime field only, and start `official vivo rpc` only after the app ID and key exist. The `session notification` controls are explicitly best-effort: dispatch does not confirm watch execution or create the backend session.
 
 The debug-only HTTP receiver permits cleartext for a controlled loopback/tailnet probe. A non-loopback listener requires a separate bridge token of at least 16 characters. Release builds reject cleartext service URLs.
 
@@ -193,7 +198,7 @@ Since `0.1.3` the watch adapter defaults to `http` against your relay's `/v1/hea
 
 ## Data and failure semantics
 
-Every observation is one immutable event containing the producer timestamp, metric, source device, status, and optional real value/sample timestamp/callback delta/session/error. `PASS` requires a real value. Missing or failed measurements remain `NO_DATA`, `DENIED`, `UNSUPPORTED`, `API_MISSING`, or `ERROR`; no layer substitutes zero or a stale value.
+Every watch observation is one immutable event containing the producer timestamp, metric, source device, status, and optional real value/sample timestamp/callback delta/session/error. A phone natural-day summary is instead a versioned current row backed by immutable upload batches; it is never disguised as a watch event. `PASS` requires a real value, including a legitimate numeric zero. Missing or failed measurements remain `NO_DATA`, `DENIED`, `UNSUPPORTED`, `API_MISSING`, or `ERROR`; no layer substitutes a stale value.
 
 Failures are attributed to `watch_module_api`, `permission`, `sample_acquisition`, `watch_transport`, `phone_receive`, `phone_persistence`, `uplink`, `backend_ingest`, `database`, or `mcp_query`. Follow [DIAGNOSTICS.md](docs/DIAGNOSTICS.md) from the first non-`PASS` layer.
 

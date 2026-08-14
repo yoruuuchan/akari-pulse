@@ -212,7 +212,7 @@ Metric coverage: heart_rate 11, heart_rate_resting 3, spo2 3, stress 3, heart_ra
 - Multi-day queue retention while offline.
 - The historical zero-bpm PASS record from `0.1.2` remains in the store (append-only) — 0.1.5 query validity rule now excludes it from PASS reads without mutation.
 - The exact `0.1.0`/`0.1.1` reboot class and offending component (historical; not currently blocking).
-- Android bridge receive/uplink (fallback only; not on the active path).
+- Watch-to-Android fallback receive/uplink remains unverified. The independent phone-local daily-summary path is verified below.
 
 ## 2026-08-14 — Android vivo phone-local today activity reader
 
@@ -244,4 +244,38 @@ A vivo Health UI capture at `2026-08-14T01:13:15+0800` showed `5 / 7,000步`; th
 
 Steps are `VERIFIED` by exact zero and nonzero UI controls. Distance and calories are classified `VERIFIED_FORMATTED_DISPLAY`: the prior nonzero sample mapped provider `4319.39` to UI `4.31 km` and provider `263.81702` to UI `263 kcal`; this verifies their unit/display correspondence but not source-timestamp freshness. Settings remained a secondary observation and was not used to manufacture success.
 
-The phone result is runtime state only in this phase. It was not sent to the watch, local Room queue, relay, production backend, or MCP, and the established watch route was not modified.
+That first reader-only phase did not persist or upload the result. The follow-up below adds persistence and uplink without converting the phone summary into a watch event or changing the watch route.
+
+### Phone daily-summary persistence and uplink follow-up
+
+The same debug package was upgraded in place on the vivo phone after a stopped-app backup of its version-1 Room database. `firstInstallTime` was preserved, the production database opened at `user_version=2`, and the existing watch tables retained their row counts. A real-device `AndroidJUnitRunner` test then passed the explicit Room 1 -> 2 migration: it inserted an old watch event under schema 1, migrated to schema 2, proved that event remained, and proved the new phone current-row key is `(source, metric, source_day)`.
+
+Two later provider reads on 2026-08-14 returned the same real values and produced two distinct immutable upload batches. The later observation is the current row for each metric:
+
+```text
+source=vivo_phone
+source_day=2026-08-14
+source_timezone=Asia/Shanghai
+sampled_at=2026-08-14T11:00:26.672+08:00
+source_timestamp_available=false
+status=PASS
+outcome=PROVIDER_CALL_SUCCEEDED
+phone_step_count=2210 count
+phone_distance=1682.3701171875 m
+phone_calories=98.30199432373047 kcal
+```
+
+Room contained exactly three current rows and two immutable three-summary outbox rows. Both outboxes completed on their first attempt with no stored error, and all three current rows had a non-null `synced_at_ms`. The second observation replaced the first observation's current-row `sampled_at` for the same source/day; it did not add the two cumulative phone readings together. The changing-value `5 -> 100 -> 3200` replacement case is also covered by the server integration suite.
+
+The phone uses a separate Cloudflare Worker secret and `/v1/health/daily-summaries` route. An unauthenticated request returned `401 UNAUTHORIZED`; the correct phone credential with an intentionally invalid body passed authentication and returned `400 INVALID_REQUEST`. The existing watch route and watch ingest secret were left intact. D1 returned to zero pending rows after each phone batch drained.
+
+The production SQLite store recorded both immutable phone batch IDs with `summary_count=3`, `accepted_count=3`, `duplicate_count=0`, and `stale_count=0`. Its current `daily_summaries` table contains only the later three phone rows above. The existing watch store remained at 105 records.
+
+The production Streamable HTTP MCP was then exercised with the official SDK client, not a direct database shortcut. It negotiated protocol `2026-07-28`, listed 14 tools, and returned:
+
+- `health_status`: `PASS`, 105 watch records, 3 phone daily-summary current rows, `backend_ingest=PASS`, and `mcp_query=PASS`;
+- `health_today(date=2026-08-14, timezone_offset_minutes=480)`: the three `vivo_phone` summaries selected by `source_day`, with the original `Asia/Shanghai` timezone and `source_timestamp_available=false` preserved;
+- `health_steps(date=2026-08-14)`: phone 2210 and watch `NO_DATA` side by side, with the explicit text `sources are returned side by side; no merge or precedence`;
+- `health_latest(metric=heart_rate)`: the old watch path still returned `PASS`, 83 bpm from `WA2456C`.
+
+The watch step branch is honestly `NO_DATA`, not overwritten by the phone. All five historical `step_count` watch records were already `NO_DATA / today_sum_collect_empty`; the phone `PASS` did not convert them to watch values. This establishes separate source visibility while preserving both the established watch event model and the phone's cumulative natural-day summary model.

@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-把 vivo WATCH GT（第一代蓝牙版，型号 `WA2456C`，BlueOS 3.0）的健康数据取出来、送进自托管后端和 MCP 服务器的研究笔记与可运行参考实现。完整链路——手表 RPK → Cloudflare 中转 Worker → 排水进本地 Node.js 服务 → SQLite → MCP（stdio 与 Streamable HTTP）——已于 2026-08-12 在真机上端到端验证，全部证据见 [docs/REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md)。
+把 vivo WATCH GT（第一代蓝牙版，型号 `WA2456C`，BlueOS 3.0）的健康数据取出来、送进自托管后端和 MCP 服务器的研究笔记与可运行参考实现。完整手表链路——手表 RPK → Cloudflare 中转 Worker → 排水进本地 Node.js 服务 → SQLite → MCP（stdio 与 Streamable HTTP）——已于 2026-08-12 在真机上端到端验证。独立的 vivo 手机本地自然日汇总链路——provider → Android Room/outbox → 单独鉴权的中转路由 → SQLite → MCP——已于 2026-08-14 端到端验证，全部证据见 [docs/REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md)。
 
 状态：参考 / 研究性质，按原样发布，不承诺维护和支持。与 vivo 无任何隶属、授权或赞助关系。可运行代码与配置中的所有端点、数据库 ID 和令牌均已替换为占位符（`REPLACE_WITH_*` 或 `pulse.example.com`）——请自备 Cloudflare Worker、D1 数据库、VPS 和隧道，默认配置不会指向任何他人的基础设施。叙述性文档中保留了作者自己部署所用的域名（`pulse.yoru-and-akari.dev`、`pulse-mcp.yoru-and-akari.dev`），因为它们是 2026-08-12 真机验证故事的一部分。
 
@@ -22,7 +22,10 @@ WA2456C / BlueOS 3.0
   -> 独立的 Akari Health MCP（stdio / Streamable HTTP）
   -> ChatGPT / Claude
 
-（安卓桥保留在代码树中，仅作后备接收器）
+vivo 手机本地今日活动
+  -> Android Room 当前行 + 不可变 outbox
+  -> 单独手机鉴权的 Worker 路由
+  -> 与手表事件并列进入同一后端与 MCP 的日汇总
 ```
 
 仓库包含真实的手表、安卓、服务端和 MCP 实现。其中不含演示用健康数值、vivo 开发者凭据、账号令牌或私有签名密钥。宿主机构建成功不等于真机成功：已确认的 `WA2456C / DPD2346C_A_1.54.5` 真机观测结果与未解决的重启边界，独立记录在 [REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md) 中，与宿主机证据分开。
@@ -34,11 +37,11 @@ WA2456C / BlueOS 3.0
 | BlueOS 手表应用 | `0.1.5` 证据与边界 RPK，用 BlueOS Studio 工具链构建（`0.1.4` 的超集：`collect stats` 新增 ZERO_SENTINEL 规则和每次调用的原始负载证据、层级诊断改为逐指标分解、新增 `probe sleep` 按钮） | `0.1.2` 通过完整隔离健康链路（3/3 次冷启动全管线通过，无重启）；`0.1.3` 的 `net probe` 与 `send batch https` 于 2026-08-12 通过；`0.1.4` 三个采集+同步按钮 2026-08-12 全部真机验证——真实非零心率、血氧、压力、静息心率端到端落入 VPS 存储；`0.1.5`（versionCode 6，SHA-256 `C8AFBE32446E30D745CBCFE68C8C7D5DA101B7B58DD78CCD52167C2D7343AE76`，89,461 字节）2026-08-12 真机验证：sentinel 规则确认、SUM 统计与睡眠边界结论性确立、NOT_APPLICABLE 层语义已在服务端生效（见 [REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md)） |
 | 手表健康链路 | 每次启动只跑一项测试的测试框架 | `PASS` —— `getRecentSamples([HEART_RATE])` → 回调 → 解析 → UI → 队列 → 快照 → 存储稳定；没有新的失败证据不要重做 |
 | 官方 BlueXlink RPC | 公开手表 API 与官方 Android AAR 均已集成 | **已关闭**：`transport init` 报 `code=1001 interconnectfeature error`；官方支持表只列 WATCH 3；vivo `appid`/`encryStr` 无法获取——见 [RESEARCH.md](docs/RESEARCH.md) |
-| Cloudflare 中转 | 部署验证（入库/重放/冲突/鉴权冒烟测试通过） | `PASS` 2026-08-12 —— 真机手表经 HTTPS 到达中转（TLS 约 4 秒），批次在 `sent_at` 后 3 秒内被存储并确认 |
-| Akari Health 服务 | 鉴权路由已用临时数据库测试 | `PASS` 2026-08-12 —— 排水后的真机手表批次进入 SQLite 记录存储 |
-| Akari Health MCP | 官方 SDK 客户端可列出并调用全部 14 个工具 | `PASS` 2026-08-12 —— `health_latest` 通过真实 stdio MCP 返回了真机记录 |
-| 常驻 VPS + 远程 MCP | 部署于东京 VPS（systemd：服务、2 分钟排水定时器、Streamable-HTTP MCP、Cloudflare Tunnel） | `PASS` 2026-08-12 —— 官方 `StreamableHTTPClientTransport` 经 `https://pulse-mcp.yoru-and-akari.dev/mcp/<secret>` 列出 14 个工具并返回手表记录；见 [deploy/tokyo](deploy/tokyo/README.md) |
-| 安卓桥 | 调试 APK 已构建、单测、lint、签名校验 | 仅作后备；不在当前主路径上 |
+| Cloudflare 中转 | 严格分离手表事件与手机日汇总入库路由；重放/冲突/鉴权测试通过 | `PASS` —— 2026-08-12 真机手表 HTTPS；2026-08-14 真机手机日汇总使用独立手机 secret，排空后待处理行回到 0 |
+| Akari Health 服务 | 手表事件鉴权路由与幂等日汇总路由均以临时数据库测试 | `PASS` —— 既有 105 条手表记录保持不变；两批真实手机数据均 3/3 接收，当前表保留较新的三条 source-day 行 |
+| Akari Health MCP | 官方 SDK 客户端可列出并调用全部 14 个工具 | `PASS` —— `health_today` 与 `health_steps` 并列暴露手机/手表；`health_latest` 仍返回真机手表记录 |
+| 常驻 VPS + 远程 MCP | 部署于东京 VPS（systemd：服务、2 分钟排水定时器、Streamable-HTTP MCP、Cloudflare Tunnel） | `PASS` —— 2026-08-12 完成公网远程手表验证；2026-08-14 再验生产 MCP：协议 `2026-07-28`、14 个工具、backend ingest PASS、MCP query PASS；见 [deploy/tokyo](deploy/tokyo/README.md) |
+| Android 应用 | 调试 APK 已构建、单测、lint，并验证 Room 1 -> 2 迁移 | `PASS` 2026-08-14 —— vivo 原地升级；真实 2210 步 / 1682.3701171875 米 / 98.30199432373047 千卡 provider 汇总；Room 当前行和两笔不可变 outbox 全部完成；手表接收器仍是独立后备路径 |
 
 精确证据与"每次启动只测一项"的自适应流程见 [REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md) 与 [DIAGNOSTICS.md](docs/DIAGNOSTICS.md)。
 
@@ -68,7 +71,7 @@ Cloudflare 中转由 [relay/](relay/README.md) 部署（Worker + D1 缓冲 + 自
 akari-pulse/
 |-- watch/       BlueOS 健康采集、持久化队列、HTTPS/RPC 适配器、诊断 UI
 |-- relay/       Cloudflare Worker 入库缓冲与 D1 表结构
-|-- android/     后备桥：Room 收发箱、官方 vivo RPC 接收器、HTTP 探针接收器
+|-- android/     手机本地日汇总，以及后备手表接收器
 |-- server/      Node.js 24 HTTP 服务与 SQLite 持久化
 |-- mcp/         独立 MCP（stdio + Streamable HTTP），基于官方 TypeScript SDK
 |-- deploy/      东京 VPS systemd 单元与运维手册（常驻存储 + 远程 MCP）
@@ -80,9 +83,11 @@ akari-pulse/
 
 ## 架构选择
 
-生产路线是手表直连 HTTPS：`@blueos.network.fetch` 把批次契约 POST 到 Cloudflare 中转，中转在 D1 中缓冲，再由 `scripts/drain-relay.mjs` 排水进本地 Akari Health 服务。vivo 官方的 BlueXlink/设备 RPC 组合是最初的候选，现已在此硬件上关闭：真机 `WA2456C` 在 `interconnect` 连接时报 `code=1001 interconnectfeature error`，官方支持表只列 vivo WATCH 3，且本项目无法获取所需的 vivo `appid`/`encryStr`。证据与归类见 [RESEARCH.md](docs/RESEARCH.md)（中文）；安卓桥保留可构建状态作为后备接收器。OrbitV 仅用于 RPK 侧载，不当作通用桥接 API 使用。
+手表生产路线仍是直连 HTTPS：`@blueos.network.fetch` 把不可变事件批次 POST 到 `pulse.yoru-and-akari.dev` 的 Cloudflare 中转，中转在 D1 中缓冲，再由 `scripts/drain-relay.mjs` 排水进本地 Akari Health 服务。与它独立的是，Android 应用读取 vivo 手机累计自然日活动汇总，经单独鉴权的 `/v1/health/daily-summaries` 路由上行。vivo 官方的 BlueXlink/设备 RPC 组合是最初的手表到手机候选，现仍在此硬件上关闭：真机 `WA2456C` 在 `interconnect` 连接时报 `code=1001 interconnectfeature error`，官方支持表只列 vivo WATCH 3，且本项目无法获取所需的 vivo `appid`/`encryStr`。证据与归类见 [RESEARCH.md](docs/RESEARCH.md)（中文）；Android 手表接收器仍保留可构建状态作为后备。OrbitV 仅用于 RPK 侧载，不当作通用桥接 API 使用。
 
 所有传输共享同一份持久化契约。接收方只有在持久化存储完成后才确认手表批次（中转：D1 插入；安卓：Room 事务），手表只有在收到匹配的 `batch_id` 及准确的 accepted/duplicates 计数后才出队。中转只有在本地服务确认同一批次后才删除对应行——任何一层都不会丢弃尚未交接的数据。
+
+手机日汇总刻意不复用手表事件契约。`source_day` 与 `source_timezone` 来自手机 provider 并决定自然日；`sampled_at` 只是桥接观察时间，绝不解释成最后一步的时间。PASS/NO_DATA/ERROR 与真实 0 原样保留。同一 `(source, metric, source_day)` 的后续观察替换当前行，同时每个上行批次保持不可变；MCP 分开返回手机和手表，不做合并或优先级覆盖。
 
 后端是基于 `node:sqlite` 的本地 Node.js 24 服务。MCP 调用该服务而不直接打开数据库，暴露只读的原始健康工具和非破坏性的会话元数据操作。
 
@@ -154,7 +159,7 @@ Set-Location .\android
 adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 ```
 
-在应用内配置 Akari Health 的地址/令牌。`encryStr` 只在安全的运行时输入框填写；Android Keystore 负责静态加密。appid 和密钥都就位后再启动 `official vivo rpc`。`session notification` 控件明确是尽力而为：派发不等于手表已执行，也不会创建后端会话。
+在应用内配置 Akari Health 地址，并把手机专用上行凭据填入 `server bearer token`；Android Keystore 负责静态加密。`read today activity` 会在事务中保存三项手机日汇总，并用 WorkManager 排队上行到 `/v1/health/daily-summaries`。该凭据必须与手表中转的 `INGEST_TOKEN` 分开。`encryStr` 只填写在它自己的安全运行时输入框；appid 和密钥都就位后再启动 `official vivo rpc`。`session notification` 控件明确是尽力而为：派发不等于手表已执行，也不会创建后端会话。
 
 仅调试构建的 HTTP 接收器允许明文，用于受控的回环/tailnet 探针。非回环监听要求至少 16 字符的独立桥接令牌。发布构建拒绝明文服务地址。
 
@@ -175,7 +180,7 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 
 ## 数据与失败语义
 
-每条观测都是一个不可变事件，含生产者时间戳、指标、来源设备、状态，以及可选的真实值/样本时间戳/回调间隔/会话/错误。`PASS` 必须携带真实值。缺失或失败的测量保持 `NO_DATA`、`DENIED`、`UNSUPPORTED`、`API_MISSING` 或 `ERROR`；任何一层都不得用零或旧值顶替。
+每条手表观测都是一个不可变事件，含生产者时间戳、指标、来源设备、状态，以及可选的真实值/样本时间戳/回调间隔/会话/错误。手机自然日汇总则是由不可变上行批次支撑的带版本当前行，绝不伪装成手表事件。`PASS` 必须携带真实值，其中可以包含合法数值 0。缺失或失败的测量保持 `NO_DATA`、`DENIED`、`UNSUPPORTED`、`API_MISSING` 或 `ERROR`；任何一层都不得用旧值顶替。
 
 失败归因到 `watch_module_api`、`permission`、`sample_acquisition`、`watch_transport`、`phone_receive`、`phone_persistence`、`uplink`、`backend_ingest`、`database` 或 `mcp_query`。从第一个非 `PASS` 的层开始，按 [DIAGNOSTICS.md](docs/DIAGNOSTICS.md) 排查。
 
