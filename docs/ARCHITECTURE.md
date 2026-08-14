@@ -3,14 +3,17 @@
 ## System boundary
 
 ```text
-vivo WATCH GT (WA2456C)
-  health + sensor APIs
-  durable unsent queue
-        |
-        | @blueos.network.fetch  (HTTPS, X-Akari-Bridge-Token)
-        v
+vivo WATCH GT (WA2456C)                 vivo phone StepProvider
+  health + sensor APIs                    Android Room v2 current daily summaries
+  durable unsent queue                    + immutable outbox
+        |                                       |
+        | @blueos.network.fetch                 | Android HTTPS uplink
+        | X-Akari-Bridge-Token                  | separate phone X-Akari-Bridge-Token
+        +-------------------+   +---------------+
+                            |   |
+                            v   v
 akari-pulse-relay (Cloudflare Worker + D1 buffer)
-  strict batch validation, insert-then-ACK
+  strict watch-event / phone-summary validation, insert-then-ACK
   https://pulse.yoru-and-akari.dev
         |
         | akari-drain.timer on the Tokyo VPS, every 2 min
@@ -18,6 +21,7 @@ akari-pulse-relay (Cloudflare Worker + D1 buffer)
         v
 Akari Health service  (Tokyo VPS, 127.0.0.1:28787, systemd)
   append-only health records
+  idempotently updated phone daily summaries keyed by source day
   sessions + correlation events
   SQLite
         |
@@ -37,7 +41,7 @@ The store of record moved to the Tokyo VPS on 2026-08-12 so queries work with th
 the Windows-side service remains a development instance. The VPS drain timer is the only
 drain client (single-drainer rule — see [../deploy/tokyo/README.md](../deploy/tokyo/README.md)).
 
-The Android bridge (BlueXlink receiver + LAN HTTP listener) remains in the tree as a fallback and diagnostic layer, but it is no longer on the primary path: BlueXlink is closed as unsupported/credential-blocked on `WA2456C` (see [RESEARCH.md](RESEARCH.md) 2026-08-12), and the LAN listener matters only if the relay route fails the `net probe` gate.
+The Android bridge's BlueXlink receiver and LAN HTTP listener remain fallback/diagnostic watch layers: BlueXlink is closed as unsupported/credential-blocked on `WA2456C` (see [RESEARCH.md](RESEARCH.md) 2026-08-12), and the LAN listener matters only if the watch relay route fails the `net probe` gate. The same APK is now an active, independent producer for the vivo phone's today-activity daily summaries; that path does not pass through BlueXlink or the LAN listener.
 
 The watch and Android components are private sideloaded applications. The health service is local-first and binds to loopback by default. It may bind to one exact Tailscale address only when a bearer token is configured. The MCP is an independent process and does not modify the existing Akari Surface Desktop MCP.
 
@@ -55,7 +59,7 @@ The watch's local start/stop control governs its live heart-rate subscription. M
 
 The watch HTTP adapter POSTs the unchanged batch contract to `https://pulse.yoru-and-akari.dev/v1/health/batches` with `X-Akari-Bridge-Token`. The relay validates the entire batch with the same rules as the local service, stores it in D1 before acknowledging, and answers with the exact acknowledgement shape the watch verifies: 2xx, `ok === true`, matching `batch_id`, and non-negative `accepted`/`duplicates` summing to the submitted event count. Anything else keeps the events queued on the watch.
 
-The relay is a buffer, not a store of record. `scripts/drain-relay.mjs` pulls pending batches with a separate admin token, re-POSTs each unchanged payload to the local service's existing `/v1/health/batches` route, and deletes a relay row only after the local service acknowledged that exact batch. Event-level dedup stays where it always was, in the local service. Relay routes, semantics, and deploy steps are in [../relay/README.md](../relay/README.md).
+The relay is a buffer, not a store of record. `scripts/drain-relay.mjs` pulls pending batches with a separate admin token, re-POSTs each unchanged payload to the target path stored with its row (`/v1/health/batches` or `/v1/health/daily-summaries`), and deletes a relay row only after the local service acknowledged that exact batch. Event-level and daily-summary idempotence stay in the local service. Relay routes, semantics, and deploy steps are in [../relay/README.md](../relay/README.md).
 
 This route depends on one real-device fact confirmed on 2026-08-12: a sideloaded quick app's `@blueos.network.fetch` receives internet access through the paired phone. The `0.1.3` `net probe` proved it (relay HTTPS 200, ~4 s TLS), and a controlled `0.1.4` attribution experiment isolated the mechanism: with only the phone paired, fetch succeeded in 3 s; with only the PC Bluetooth link active (no phone), it failed instantly (`code=-6`). The internet path runs through the paired phone's vivo Health Bluetooth proxy.
 
@@ -69,10 +73,11 @@ The Android HTTP receiver is a user-started foreground diagnostic service accept
 
 ## Android durability
 
-Android has two independent boundaries:
+Android has three independent boundaries:
 
 1. receiver transaction: validate the outer message and every event, detect stable-ID conflicts, write accepted records and queue state atomically, then acknowledge;
 2. uplink transaction: send a stable batch to Akari Health, verify the matching response and total count, then mark only those records uploaded.
+3. phone-summary transaction: replace the three current `source + metric + source_day` rows and insert one immutable outbox batch atomically; a later read never mutates an in-flight payload.
 
 WorkManager retries transient uplink failure with backoff. A batch/event ID conflict is terminal and remains visible for investigation. Bridge settings keep service and bridge tokens in Android Keystore-backed encrypted storage; source files and diagnostics do not print them.
 
@@ -82,17 +87,13 @@ The Android bridge now has a separate `VivoTodayActivityReader` for the vivo pho
 
 The runtime state and debug JSON retain four distinct outcomes: provider success, provider `NO_DATA`, provider call failure, and result parse failure. A real zero from a successful provider Bundle remains `PASS`; Settings `vivo_settings_realtime_steps` is diagnostics only and never acts as fallback. The provider exposes the final calendar-day cumulative `step`, not a delta, and does not expose the source timestamp. The reader therefore reports the phone's actual timezone and local day plus an explicitly observation-only `sample_epoch_ms`.
 
-Phone results are deliberately not uploaded in this phase. The existing generic health-event record has producer/sample timestamps but no `source_day` or `source_timezone`; `/v1/health/today` buckets records from event timestamps using the caller's numeric offset. Treating the bridge observation time as the source time could mis-bucket an `Asia/Shanghai` day summary near midnight, and reusing watch metric `step_count` would hide source precedence.
+Room v2 persists the three results as `phone_step_count`, `phone_distance`, and `phone_calories`, separate from every watch event metric. `source_day` and IANA `source_timezone` are immutable source semantics; `sampled_at` is only the bridge observation time and `source_timestamp_available` remains false. A later read for the same day replaces the current summary, including explicit `NO_DATA` or `ERROR`; no earlier value is used as fallback.
 
-The smallest safe backend extension is:
+Each read also creates a stable outbox batch. Production uses a phone-specific relay credential and `POST /v1/health/daily-summaries`; the existing D1 relay records the target path and the single Tokyo drain forwards the unchanged batch. This adds no phone logic to the watch event endpoint and does not alter watch transport.
 
-1. preserve immutable `source_day`, IANA `source_timezone`, freshness classification, and source-timestamp availability on phone-summary records;
-2. use a distinct `phone_step_count` metric while retaining watch `step_count` and cumulative-since-boot `step_count_sensor` unchanged;
-3. have `health_today` group phone summaries by `source_day`, not by the observation timestamp;
-4. have `health_steps` return every available source and state an explicit preference, with the UI-verified phone day summary ahead of the boot-relative sensor value but never deleting or overwriting either record;
-5. keep distance/calorie verification metadata with those fields if they are later ingested rather than silently promoting them to interchangeable watch metrics.
+The service schema v2 keeps `daily_summaries` mutable only at the composite key `source + metric + source_day` and keeps every inbound daily-summary batch immutable for idempotence. A newer `sampled_at` updates the current row, an exact same observation is a duplicate, an older delayed batch is `stale`, and same-time different content is a conflict. These rules order observations but never derive the day from `sampled_at`.
 
-That change spans the shared schema, Android Room migration/event factory, server persistence/query rules, and MCP tests, so it is intentionally separated from the verified phone-reader integration.
+`/v1/health/today` preserves the legacy watch `metrics` object and adds phone `daily_summaries` plus a source-parallel `steps` object. Phone/watch values are never merged and neither is assigned precedence. Distance/calorie verification state remains attached to the phone records rather than making them interchangeable with watch metrics.
 
 ## Service durability and queries
 
@@ -104,7 +105,7 @@ The service also owns mutable session metadata and immutable correlation events.
 
 The stdio MCP calls the authenticated service rather than opening SQLite. It exposes read-only health tools plus two non-destructive session-metadata writes. Raw samples cannot be updated or deleted through MCP. Standard output is reserved for JSON-RPC; process diagnostics use standard error.
 
-`health_steps` prefers the official `step_count` daily statistic. When only the live sensor is available, it returns `step_count_sensor` as a maximum observed cumulative-since-boot value and explicitly refuses to call it a calendar-day total. Sleep, SpO2, and stress tools include non-`PASS` diagnostic records so `DENIED`, `UNSUPPORTED`, and `API_MISSING` are not hidden as empty data.
+`health_steps` returns watch `step_count`, watch `step_count_sensor`, and phone `phone_step_count` side by side. It does not merge sources or state a phone/watch preference; the sensor record remains explicitly labeled as cumulative-since-boot rather than a calendar-day total. Sleep, SpO2, and stress tools include non-`PASS` diagnostic records so `DENIED`, `UNSUPPORTED`, and `API_MISSING` are not hidden as empty data.
 
 ## Status and diagnostic model
 
@@ -124,12 +125,16 @@ Layer diagnostics are independent: `watch_module_api`, `permission`, `sample_acq
 The event-level status vocabulary above is closed. Layer summaries in
 `/v1/status` may additionally report `NOT_APPLICABLE` for
 `phone_receive`/`phone_persistence`/`uplink` when zero records exist for
-them: these layers only ever produce records when the Android bridge is on
-the active path, and the current route is watch → relay → drain → service.
+them: these diagnostic event metrics describe the Android watch-receiver
+fallback, and the current watch route is watch → relay → drain → service.
 The status distinguishes structural absence ("bridge is not in the path")
 from `NO_DATA` ("a producer for this layer ran and reported nothing"). If a
 real record ever arrives from a re-enabled bridge, the real status takes
 over from the next request.
+
+Phone daily summaries do not fabricate those watch-receiver diagnostics.
+Their per-metric status/outcome and `last_daily_summary_ingest` report the
+independent phone pipeline instead.
 
 ### Query validity rule: bpm-family value 0
 

@@ -72,6 +72,24 @@ function summarizeLatest(payload, metric = null) {
   return `${records.length} latest health metrics returned`;
 }
 
+function summarizeStepSources(payload) {
+  const steps = payload.data.steps;
+  const parts = [];
+  if (steps.watch.step_count.status === "PASS") {
+    parts.push(`watch step_count: ${steps.watch.step_count.value}`);
+  }
+  if (steps.watch.step_count_sensor.status === "PASS") {
+    parts.push(`watch step_count_sensor: ${steps.watch.step_count_sensor.value} (cumulative since boot; not a calendar-day total)`);
+  }
+  if (steps.phone.status === "PASS") {
+    parts.push(`phone: ${steps.phone.value} (${steps.phone.source_day}, ${steps.phone.source_timezone})`);
+  } else if (steps.phone.sampled_at !== null) {
+    parts.push(`phone: ${steps.phone.status} (${steps.phone.source_day}, sampled ${steps.phone.sampled_at})`);
+  }
+  if (parts.length === 0) parts.push(`no step observations are available for ${payload.data.date}`);
+  return `${parts.join(" · ")} · sources are returned side by side; no merge or precedence`;
+}
+
 function reflectRecordStatus(payload) {
   const records = payload.data.records;
   if (records.length === 0 || records.some((record) => record.status === "PASS")) return payload;
@@ -132,7 +150,7 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
     "health_today",
     {
       title: "Today's health summary",
-      description: "Read bounded metric summaries for a local calendar date. The UTC offset is explicit so 'today' is reproducible.",
+      description: "Read bounded watch metrics and phone daily summaries for a calendar date. Phone records retain their source_day and are never re-bucketed from sampled_at.",
       inputSchema: z.object({
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         timezone_offset_minutes: z.number().int().min(-720).max(840).default(540),
@@ -150,7 +168,12 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
             ["metrics", metrics?.join(",")],
           ])}`,
         );
-        return textResult(payload, `${payload.data.date}: ${Object.keys(payload.data.metrics).length} health metrics summarized`);
+        const phoneCount = Object.values(payload.data.daily_summaries || {})
+          .reduce((count, source) => count + Object.keys(source).length, 0);
+        return textResult(
+          payload,
+          `${payload.data.date}: ${Object.keys(payload.data.metrics).length} watch metrics and ${phoneCount} phone daily summaries returned`,
+        );
       }),
   );
 
@@ -243,7 +266,7 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
     "health_steps",
     {
       title: "Steps",
-      description: "Read official daily steps when available, otherwise report the maximum observed cumulative-since-boot sensor value without treating it as a calendar-day total.",
+      description: "Return watch official/sensor steps and the vivo phone daily summary side by side. Sources are never merged and neither source overrides the other.",
       inputSchema: z.object({
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         timezone_offset_minutes: z.number().int().min(-720).max(840).default(540),
@@ -253,31 +276,38 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
     },
     async ({ date, timezone_offset_minutes }) =>
       invoke(async () => {
-        const payload = date
-          ? await api.request(
-              `/v1/health/today${queryString([
-                ["date", date],
-                ["timezone_offset_minutes", timezone_offset_minutes],
-                ["metrics", "step_count,step_count_sensor"],
-              ])}`,
-            )
-          : await api.request("/v1/health/latest?metrics=step_count,step_count_sensor");
-        const official = date
-          ? payload.data.metrics.step_count
-          : payload.data.records.find((record) => record.metric === "step_count");
-        const sensor = date
-          ? payload.data.metrics.step_count_sensor
-          : payload.data.records.find((record) => record.metric === "step_count_sensor");
-        const text = official
-          ? date
-            ? `steps on ${date}: ${official.daily_value} (official daily statistic)`
-            : summarizeLatest({ data: { records: [official] } }, "step_count")
-          : sensor
-            ? date
-              ? `steps observed on ${date}: ${sensor.daily_value} (maximum cumulative-since-boot value; not a calendar-day total)`
-              : `${summarizeLatest({ data: { records: [sensor] } }, "step_count_sensor")} · cumulative since boot; not a calendar-day total`
-            : `no step observations are available${date ? ` for ${date}` : ""}`;
-        return textResult(payload, text);
+        const todayPayload = await api.request(
+          `/v1/health/today${queryString([
+            ["date", date],
+            ["timezone_offset_minutes", timezone_offset_minutes],
+            ["metrics", "step_count,step_count_sensor,phone_step_count"],
+          ])}`,
+        );
+        if (!date) {
+          const legacyLatest = await api.request("/v1/health/latest?metrics=step_count,step_count_sensor");
+          todayPayload.data.records = legacyLatest.data.records;
+          for (const metric of ["step_count", "step_count_sensor"]) {
+            if (todayPayload.data.steps.watch[metric].status === "PASS") continue;
+            const record = legacyLatest.data.records.find((candidate) => candidate.metric === metric);
+            if (!record) continue;
+            todayPayload.data.steps.watch[metric] = {
+              status: "PASS",
+              metric,
+              value: record.value,
+              unit: record.unit ?? null,
+              observation_scope: "latest_available",
+              record,
+            };
+          }
+          if (
+            todayPayload.data.steps.watch.step_count.status === "PASS" ||
+            todayPayload.data.steps.watch.step_count_sensor.status === "PASS"
+          ) {
+            todayPayload.data.steps.watch.status = "PASS";
+            todayPayload.status = "PASS";
+          }
+        }
+        return textResult(todayPayload, summarizeStepSources(todayPayload));
       }),
   );
 

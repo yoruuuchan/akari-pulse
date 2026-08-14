@@ -59,6 +59,36 @@ test("official MCP client lists and invokes the Akari Health stdio tools", async
   });
   assert.equal(ingestResponse.status, 202);
 
+  const phoneIngestResponse = await fetch(`${serviceUrl}/v1/health/daily-summaries`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      batch_id: "mcp-phone-daily-fixture",
+      producer: "akari-pulse-android-fixture",
+      summaries: [
+        ["phone_step_count", "count", 4000, "VERIFIED"],
+        ["phone_distance", "m", 2800.5, "VERIFIED_FORMATTED_DISPLAY"],
+        ["phone_calories", "kcal", 180.25, "VERIFIED_FORMATTED_DISPLAY"],
+      ].map(([metric, unit, value, verification]) => ({
+        source: "vivo_phone",
+        metric,
+        source_day: "2026-08-09",
+        source_timezone: "Asia/Shanghai",
+        value,
+        unit,
+        sampled_at: "2026-08-09T11:15:00+08:00",
+        source_timestamp_available: false,
+        status: "PASS",
+        outcome: "PROVIDER_CALL_SUCCEEDED",
+        verification,
+      })),
+    }),
+  });
+  assert.equal(phoneIngestResponse.status, 202);
+
   const environment = Object.fromEntries(
     Object.entries(process.env).filter((entry) => typeof entry[1] === "string"),
   );
@@ -106,6 +136,7 @@ test("official MCP client lists and invokes the Akari Health stdio tools", async
     const status = await client.callTool({ name: "health_status", arguments: {} });
     assert.equal(status.isError, undefined);
     assert.equal(status.structuredContent.data.database.record_count, 2);
+    assert.equal(status.structuredContent.data.database.daily_summary_count, 3);
     assert.equal(status.structuredContent.data.layers.mcp_query.status, "PASS");
 
     const latest = await client.callTool({
@@ -119,6 +150,28 @@ test("official MCP client lists and invokes the Akari Health stdio tools", async
     assert.equal(steps.structuredContent.status, "PASS");
     assert.equal(steps.structuredContent.data.records[0].metric, "step_count_sensor");
     assert.match(steps.content[0].text, /cumulative since boot; not a calendar-day total/);
+
+    const datedSteps = await client.callTool({
+      name: "health_steps",
+      arguments: { date: "2026-08-09", timezone_offset_minutes: 480 },
+    });
+    assert.equal(datedSteps.structuredContent.status, "PASS");
+    assert.equal(datedSteps.structuredContent.data.steps.watch.step_count_sensor.value, 3456);
+    assert.equal(datedSteps.structuredContent.data.steps.phone.value, 4000);
+    assert.equal(datedSteps.structuredContent.data.steps.phone.source_day, "2026-08-09");
+    assert.match(datedSteps.content[0].text, /sources are returned side by side; no merge or precedence/);
+
+    const today = await client.callTool({
+      name: "health_today",
+      arguments: {
+        date: "2026-08-09",
+        timezone_offset_minutes: 480,
+        metrics: ["step_count_sensor", "phone_step_count", "phone_distance", "phone_calories"],
+      },
+    });
+    assert.equal(today.structuredContent.data.metrics.step_count_sensor.daily_value, 3456);
+    assert.equal(today.structuredContent.data.daily_summaries.vivo_phone.phone_step_count.value, 4000);
+    assert.equal(today.structuredContent.data.daily_summaries.vivo_phone.phone_distance.value, 2800.5);
 
     const ambiguousTime = await client.callTool({
       name: "health_heart_rate",
