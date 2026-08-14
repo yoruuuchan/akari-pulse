@@ -121,7 +121,7 @@ adb install -r .\app\build\outputs\apk\androidTest\debug\app-debug-androidTest.a
 adb shell am instrument -w -r dev.akari.pulse.bridge.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
-Result: `OK (1 test)`. The migration test preserves a schema-1 watch row and validates schema-2 phone upsert semantics. Two real provider reads subsequently created two completed immutable outboxes and one later current row per phone metric; relay drain, production SQLite fields, official Streamable HTTP MCP calls, and the unchanged watch record count are documented in [REAL_DEVICE_RESULTS.md](REAL_DEVICE_RESULTS.md).
+Result: `OK (1 test)`. The migration test preserves a schema-1 watch row and validates schema-2 phone upsert semantics. The first two real provider reads created two completed immutable outboxes and one later current row per phone metric; a subsequent third real refresh advanced the production current values through a third distinct batch. Relay drain, production SQLite fields, official Streamable HTTP MCP calls, and the unchanged watch record count are documented in [REAL_DEVICE_RESULTS.md](REAL_DEVICE_RESULTS.md).
 
 ## BlueOS build and package validation
 

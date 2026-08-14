@@ -38,10 +38,10 @@ vivo 手机本地今日活动
 | 手表健康链路 | 每次启动只跑一项测试的测试框架 | `PASS` —— `getRecentSamples([HEART_RATE])` → 回调 → 解析 → UI → 队列 → 快照 → 存储稳定；没有新的失败证据不要重做 |
 | 官方 BlueXlink RPC | 公开手表 API 与官方 Android AAR 均已集成 | **已关闭**：`transport init` 报 `code=1001 interconnectfeature error`；官方支持表只列 WATCH 3；vivo `appid`/`encryStr` 无法获取——见 [RESEARCH.md](docs/RESEARCH.md) |
 | Cloudflare 中转 | 严格分离手表事件与手机日汇总入库路由；重放/冲突/鉴权测试通过 | `PASS` —— 2026-08-12 真机手表 HTTPS；2026-08-14 真机手机日汇总使用独立手机 secret，排空后待处理行回到 0 |
-| Akari Health 服务 | 手表事件鉴权路由与幂等日汇总路由均以临时数据库测试 | `PASS` —— 既有 105 条手表记录保持不变；两批真实手机数据均 3/3 接收，当前表保留较新的三条 source-day 行 |
+| Akari Health 服务 | 手表事件鉴权路由与幂等日汇总路由均以临时数据库测试 | `PASS` —— 既有 105 条手表记录保持不变；三批真实手机数据均 3/3 接收，当前表只保留最新的三条 source-day 行 |
 | Akari Health MCP | 官方 SDK 客户端可列出并调用全部 14 个工具 | `PASS` —— `health_today` 与 `health_steps` 并列暴露手机/手表；`health_latest` 仍返回真机手表记录 |
 | 常驻 VPS + 远程 MCP | 部署于东京 VPS（systemd：服务、2 分钟排水定时器、Streamable-HTTP MCP、Cloudflare Tunnel） | `PASS` —— 2026-08-12 完成公网远程手表验证；2026-08-14 再验生产 MCP：协议 `2026-07-28`、14 个工具、backend ingest PASS、MCP query PASS；见 [deploy/tokyo](deploy/tokyo/README.md) |
-| Android 应用 | 调试 APK 已构建、单测、lint，并验证 Room 1 -> 2 迁移 | `PASS` 2026-08-14 —— vivo 原地升级；真实 2210 步 / 1682.3701171875 米 / 98.30199432373047 千卡 provider 汇总；Room 当前行和两笔不可变 outbox 全部完成；手表接收器仍是独立后备路径 |
+| Android 应用 | 调试 APK 已构建、单测、lint，并验证 Room 1 -> 2 迁移 | `PASS` 2026-08-14 —— vivo 原地升级并完成多次真实 provider 读取；生产当前汇总最新为 2212 步 / 1683.91015625 米 / 98.35599517822266 千卡，由 Room 当前行与不可变 outbox 支撑；手表接收器仍是独立后备路径 |
 
 精确证据与"每次启动只测一项"的自适应流程见 [REAL_DEVICE_RESULTS.md](docs/REAL_DEVICE_RESULTS.md) 与 [DIAGNOSTICS.md](docs/DIAGNOSTICS.md)。
 
