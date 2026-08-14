@@ -109,7 +109,7 @@ Every Recent HR path calls exactly `health.getRecentSamples({dataTypes: [health.
 
 The full path exposes `CALLBACK_ENTERED_*`, `PARSE_*`, `QUEUE_MEMORY`, `BEGIN_SNAPSHOT`, `SNAPSHOT_READY`, `BEGIN_STORAGE_SET`, and `STORAGE_SUCCESS`. Use `load saved queue state` after a reboot to inspect the last successfully persisted diagnostic event, then relaunch again before another test. The adaptive test order and interpretation are in `../docs/DIAGNOSTICS.md` and `../docs/REAL_DEVICE_RESULTS.md`.
 
-The old `0.1.0` Run probe synchronously issued eight singleton `getRecentSamples` calls followed by eleven `getTodayStatistic` calls without awaiting any callback. Source order was `HEART_RATE`, `HEART_RATE_STEP`, `HEART_RATE_RESTING`, `SPO2`, `STRESS`, `WALKING_SPEED`, `SLEEP_STATUS`, `WALKING_STATUS`, then `HEART_RATE/MAX`, `HEART_RATE/MIN`, `SPO2/MAX`, `SPO2/MIN`, `STRESS/MAX`, `STRESS/MIN`, `STANDING/SUM`, `INTENSITY_SPORT/SUM`, `STEP_COUNT/SUM`, `DISTANCE/SUM`, and `CALORIES/SUM`. It then recorded local unsupported observations for `SLEEP_UNIT`, `SLEEP_STAGES`, `ENERGY`, and `SPEED`; those four did not make health API calls. Consequently, seeing `82 bpm` did not mean the other eighteen native calls had not already been dispatched.
+The old `0.1.0` Run probe synchronously issued eight singleton `getRecentSamples` calls followed by eleven `getTodayStatistic` calls without awaiting any callback. Source order was `HEART_RATE`, `HEART_RATE_STEP`, `HEART_RATE_RESTING`, `SPO2`, `STRESS`, `WALKING_SPEED`, `SLEEP_STATUS`, `WALKING_STATUS`, then `HEART_RATE/MAX`, `HEART_RATE/MIN`, `SPO2/MAX`, `SPO2/MIN`, `STRESS/MAX`, `STRESS/MIN`, `STANDING/SUM`, `INTENSITY_SPORT/SUM`, `STEP_COUNT/SUM`, `DISTANCE/SUM`, and `CALORIES/SUM`. It then recorded local unsupported observations for `SLEEP_UNIT`, `SLEEP_STAGES`, `ENERGY`, and `SPEED`; those four did not make health API calls. Consequently, seeing one real nonzero heart-rate result did not mean the other eighteen native calls had not already been dispatched.
 
 Failure mapping is deliberate:
 
@@ -278,7 +278,7 @@ Proven by host inspection or the recorded named-watch observations:
 - compilation of this source into a debug watch-square RPK with the official Studio 2.0.5 toolchain;
 - package inspection showing the compiled manifest, `META-INF/CERT`, app bytecode, logo, and build metadata;
 - source has no `sign/` directory or private key;
-- successful OrbitV installation of `0.1.0`, approval of `READ_HEALTH_DATA`, and one real `getRecentSamples([HEART_RATE])` result of `82 bpm` on the named watch;
+- successful OrbitV installation of `0.1.0`, approval of `READ_HEALTH_DATA`, and one real nonzero `getRecentSamples([HEART_RATE])` result on the named watch;
 - successful OrbitV installation of byte-identified `0.1.1`, at least one minute of idle stability, and a later full-watch reboot after the only tap was `Recent HR`, with no new value visible;
 - the host-side OrbitV installation records completed successfully while the available encrypted application log and absent device-log pull did not identify either watch reboot reason.
 

@@ -212,7 +212,7 @@ akari-pulse-mcp-0.1.0.tgz      8,757 bytes  7D7DA216EBF343045282EB335863184E5DAC
 
 ## Device acceptance still required
 
-The watch was not directly attached to BlueOS Studio or ADB on this build host, but the user performed OrbitV tests on the named physical watch. OrbitV installation, the `READ_HEALTH_DATA` grant, one real `82 bpm` result in `0.1.0`, idle stability in `0.1.1`, and the two reported full-watch reboots are recorded in [REAL_DEVICE_RESULTS.md](REAL_DEVICE_RESULTS.md). There is still no device crash log or reboot reason.
+The watch was not directly attached to BlueOS Studio or ADB on this build host, but the user performed OrbitV tests on the named physical watch. OrbitV installation, the `READ_HEALTH_DATA` grant, one real nonzero heart-rate result in `0.1.0`, idle stability in `0.1.1`, and the two reported full-watch reboots are recorded in [REAL_DEVICE_RESULTS.md](REAL_DEVICE_RESULTS.md). There is still no device crash log or reboot reason.
 
 The `0.1.2` isolated HR layers, live callback cadence, other health capabilities, screen-off behavior, official RPC credential acceptance, WA2456C channel support, business ACK shape, HTTP reachability from the watch, APK installation, OEM background behavior, remote tailnet upload, and MCP queries over real watch records remain unverified.
 
