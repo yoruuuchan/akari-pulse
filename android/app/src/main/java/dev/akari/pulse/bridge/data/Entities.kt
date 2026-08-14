@@ -169,6 +169,97 @@ data class PhoneDailySummaryUploadEntity(
     val completedAt: Long? = null,
 )
 
+@Entity(
+    tableName = "sleep_summaries",
+    primaryKeys = ["source", "source_day"],
+    indices = [
+        Index(value = ["sampled_at_ms"]),
+        Index(value = ["synced_at_ms"]),
+    ],
+)
+data class SleepSummaryEntity(
+    val source: String,
+    @ColumnInfo(name = "source_day")
+    val sourceDay: String,
+    @ColumnInfo(name = "source_timezone")
+    val sourceTimezone: String,
+    @ColumnInfo(name = "source_day_start_ms")
+    val sourceDayStart: Long?,
+    @ColumnInfo(name = "sleep_start_ms")
+    val sleepStart: Long,
+    @ColumnInfo(name = "sleep_end_ms")
+    val sleepEnd: Long,
+    @ColumnInfo(name = "sampled_at_ms")
+    val sampledAt: Long,
+    @ColumnInfo(name = "sampled_at")
+    val sampledAtText: String,
+    val status: String,
+    val outcome: String,
+    val verification: String,
+    @ColumnInfo(name = "recorder_generation")
+    val recorderGeneration: Int?,
+    @ColumnInfo(name = "low_accuracy")
+    val lowAccuracy: Boolean?,
+    val score: Int?,
+    @ColumnInfo(name = "deep_sleep_continuity")
+    val deepSleepContinuity: Int?,
+    @ColumnInfo(name = "total_duration_ms")
+    val totalDurationMs: Long,
+    @ColumnInfo(name = "night_sleep_duration_ms")
+    val nightSleepDurationMs: Long?,
+    @ColumnInfo(name = "nap_duration_ms")
+    val napDurationMs: Long?,
+    @ColumnInfo(name = "chart_total_duration_ms")
+    val chartTotalDurationMs: Long?,
+    @ColumnInfo(name = "light_sleep_duration_ms")
+    val lightSleepDurationMs: Long?,
+    @ColumnInfo(name = "deep_sleep_duration_ms")
+    val deepSleepDurationMs: Long?,
+    @ColumnInfo(name = "rem_sleep_duration_ms")
+    val remSleepDurationMs: Long?,
+    @ColumnInfo(name = "awake_duration_ms")
+    val awakeDurationMs: Long?,
+    @ColumnInfo(name = "awake_episode_count")
+    val awakeEpisodeCount: Int?,
+    @ColumnInfo(name = "awake_episode_duration_ms")
+    val awakeEpisodeDurationMs: Long?,
+    @ColumnInfo(name = "stages_json")
+    val stagesJson: String,
+    @ColumnInfo(name = "synced_at_ms")
+    val syncedAt: Long? = null,
+)
+
+@Entity(
+    tableName = "sleep_summary_uploads",
+    indices = [Index(value = ["completed_at_ms"]), Index(value = ["created_at_ms"])],
+)
+data class SleepSummaryUploadEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "batch_id")
+    val batchId: String,
+    @ColumnInfo(name = "created_at_ms")
+    val createdAt: Long,
+    @ColumnInfo(name = "sent_at_ms")
+    val sentAt: Long,
+    val source: String,
+    @ColumnInfo(name = "source_day")
+    val sourceDay: String,
+    @ColumnInfo(name = "sampled_at_ms")
+    val sampledAt: Long,
+    @ColumnInfo(name = "summary_count")
+    val summaryCount: Int,
+    @ColumnInfo(name = "payload_json")
+    val payloadJson: String,
+    @ColumnInfo(name = "attempt_count")
+    val attemptCount: Int = 0,
+    @ColumnInfo(name = "last_attempt_at_ms")
+    val lastAttemptAt: Long? = null,
+    @ColumnInfo(name = "last_error")
+    val lastError: String? = null,
+    @ColumnInfo(name = "completed_at_ms")
+    val completedAt: Long? = null,
+)
+
 data class QueueStats(
     val pendingCount: Long,
     val syncedCount: Long,

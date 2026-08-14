@@ -45,6 +45,8 @@ import dev.akari.pulse.bridge.data.HealthEventEntity
 import dev.akari.pulse.bridge.diagnostics.AdapterDiagnostics
 import dev.akari.pulse.bridge.diagnostics.TransportPhase
 import dev.akari.pulse.bridge.phonehealth.PhoneHealthStatus
+import dev.akari.pulse.bridge.phonehealth.VivoLatestVital
+import dev.akari.pulse.bridge.phonehealth.VivoPrivateHealthCapability
 import dev.akari.pulse.bridge.ui.theme.AkariError
 import java.text.DateFormat
 import java.util.Date
@@ -66,6 +68,7 @@ fun AkariPulseScreen(
         state.transport.officialRpc.phase == TransportPhase.ERROR ||
         state.transport.httpReceiver.phase == TransportPhase.ERROR ||
         state.phoneHealth?.status == PhoneHealthStatus.ERROR ||
+        state.vivoPrivateHealth?.capability?.let { it != VivoPrivateHealthCapability.GRANTED } == true ||
         state.notice?.isError == true
 
     Surface(color = MaterialTheme.colorScheme.background) {
@@ -198,6 +201,82 @@ fun AkariPulseScreen(
                     onClick = viewModel::readPhoneHealth,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 ) { Text("read today activity") }
+            }
+
+            SectionCard(title = "vivo private health · sleep + latest vitals") {
+                val privateHealth = state.vivoPrivateHealth
+                if (privateHealth == null) {
+                    Text(
+                        "not sampled · requires a one-time owner ADB grant of " +
+                            "com.vivo.health.widget.permission",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                } else {
+                    MetricRow("capability", privateHealth.capability.name)
+                    if (privateHealth.capability != VivoPrivateHealthCapability.GRANTED) {
+                        Text(
+                            when (privateHealth.capability) {
+                                VivoPrivateHealthCapability.NOT_GRANTED ->
+                                    "run scripts/bootstrap-vivo-private-health.ps1 from the PC; " +
+                                        "reinstalling this app clears the grant"
+                                VivoPrivateHealthCapability.UNSUPPORTED ->
+                                    "the vivo private health providers are absent on this device"
+                                else -> "the capability probe failed"
+                            },
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    } else {
+                        val sleep = privateHealth.sleep
+                        MetricRow("sleep", "${sleep.status} · ${sleep.outcome}")
+                        if (sleep.status == PhoneHealthStatus.PASS) {
+                            MetricRow("sleep day", sleep.sourceDay ?: "not returned")
+                            MetricRow(
+                                "asleep → awake",
+                                "${formatClock(sleep.sleepStartEpochMs)} → ${formatClock(sleep.sleepEndEpochMs)}",
+                            )
+                            MetricRow("total", formatDuration(sleep.totalDurationMs))
+                            MetricRow(
+                                "deep / light / rem",
+                                "${formatDuration(sleep.deepSleepDurationMs)} · " +
+                                    "${formatDuration(sleep.lightSleepDurationMs)} · " +
+                                    formatDuration(sleep.remSleepDurationMs),
+                            )
+                            MetricRow(
+                                "wake-ups",
+                                sleep.awakeEpisodeCount?.let {
+                                    "$it · ${formatDuration(sleep.awakeEpisodeDurationMs)}"
+                                } ?: "not returned",
+                            )
+                            MetricRow("score", sleep.score?.toString() ?: "not returned")
+                            MetricRow(
+                                "deep continuity",
+                                sleep.deepSleepContinuity?.toString() ?: "not returned",
+                            )
+                        }
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 8.dp),
+                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
+                        )
+                        MetricRow("vitals", "${privateHealth.vitals.status} · ${privateHealth.vitals.outcome}")
+                        VitalRow("heart rate", privateHealth.vitals.heartRate)
+                        VitalRow("spo2", privateHealth.vitals.spo2)
+                        VitalRow("stress", privateHealth.vitals.stress)
+                        Text(
+                            "latest single points only · no daily min/max/avg and no resting heart " +
+                                "rate exist on this provider",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                    MetricRow("read at", formatTime(privateHealth.readAtEpochMs))
+                }
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = viewModel::readVivoPrivateHealth,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                ) { Text("read sleep and vitals") }
             }
 
             SectionCard(title = "http receiver · fallback probe") {
@@ -540,6 +619,27 @@ private fun EventLog(event: HealthEventEntity) {
     event.rawErrorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
 }
 
+@Composable
+private fun VitalRow(label: String, vital: VivoLatestVital) {
+    MetricRow(
+        label,
+        if (vital.status == PhoneHealthStatus.PASS) {
+            "${vital.value} ${vital.unit} · ${formatClock(vital.sourceEpochMs)}"
+        } else {
+            vital.status.name
+        },
+    )
+}
+
 private fun formatTime(value: Long?): String = value?.let {
     DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM).format(Date(it))
 } ?: "never"
+
+private fun formatClock(value: Long?): String = value?.let {
+    DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(it))
+} ?: "not returned"
+
+private fun formatDuration(milliseconds: Long?): String = milliseconds?.let {
+    val minutes = it / 60_000
+    "${minutes / 60}h${minutes % 60}m"
+} ?: "not returned"

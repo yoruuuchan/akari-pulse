@@ -168,3 +168,83 @@ test("phone token and status semantics are enforced before durable acknowledgeme
   assert.equal(invalidStatus.response.status, 400);
   assert.equal(environment.DB.rows.length, 0);
 });
+
+const sleepSummary = (overrides = {}) => ({
+  source: "vivo_phone",
+  source_day: "2026-01-02",
+  source_timezone: "Asia/Shanghai",
+  source_day_start: 1_767_283_200_000,
+  sleep_start: 1_767_310_000_000,
+  sleep_end: 1_767_338_800_000,
+  sampled_at: "2026-01-02T20:00:00+08:00",
+  status: "PASS",
+  outcome: "PROVIDER_CALL_SUCCEEDED",
+  verification: "VERIFIED",
+  recorder_generation: 2,
+  low_accuracy: false,
+  score: 64,
+  deep_sleep_continuity: 90,
+  total_duration_ms: 26_400_000,
+  night_sleep_duration_ms: 26_400_000,
+  nap_duration_ms: 0,
+  chart_total_duration_ms: 28_800_000,
+  light_sleep_duration_ms: 17_400_000,
+  deep_sleep_duration_ms: 3_600_000,
+  rem_sleep_duration_ms: 5_400_000,
+  awake_duration_ms: 2_400_000,
+  awake_episode_count: 2,
+  awake_episode_duration_ms: 1_200_000,
+  stages: { deep: [{ start: 1_767_313_600_000, end: 1_767_317_200_000 }] },
+  ...overrides,
+});
+
+test("sleep summaries buffer on their own target path under the phone token", async () => {
+  const environment = env();
+  const batch = { batch_id: "sleep-batch", producer: "android-test", summaries: [sleepSummary()] };
+
+  const wrongToken = await post("/v1/health/sleep-summaries", "watch-token", batch, environment);
+  assert.equal(wrongToken.response.status, 401);
+  assert.equal(environment.DB.rows.length, 0);
+
+  const ingest = await post("/v1/health/sleep-summaries", "phone-token", batch, environment);
+  assert.equal(ingest.response.status, 202);
+  assert.deepEqual(
+    {
+      accepted: ingest.body.data.accepted,
+      duplicates: ingest.body.data.duplicates,
+      stale: ingest.body.data.stale,
+    },
+    { accepted: 1, duplicates: 0, stale: 0 },
+  );
+
+  const replay = await post("/v1/health/sleep-summaries", "phone-token", batch, environment);
+  assert.equal(replay.response.status, 200);
+  assert.equal(replay.body.data.replayed, true);
+
+  const pendingResponse = await worker.fetch(new Request(
+    "https://pulse.example.com/v1/relay/pending?limit=50",
+    { headers: { authorization: "Bearer admin-token" } },
+  ), environment);
+  const pending = await pendingResponse.json();
+  assert.deepEqual(pending.data.batches.map((row) => row.target_path), ["/v1/health/sleep-summaries"]);
+});
+
+test("a sleep summary that is not an observed day is rejected before it is buffered", async () => {
+  const environment = env();
+  for (const overrides of [
+    { status: "NO_DATA" },
+    { outcome: "PARSE_FAILED" },
+    { sleep_end: 1_767_309_000_000 },
+    { stages: { snore: [] } },
+    { source: "wa2456c" },
+  ]) {
+    const rejected = await post(
+      "/v1/health/sleep-summaries",
+      "phone-token",
+      { batch_id: `sleep-invalid-${JSON.stringify(overrides).length}`, producer: "android-test", summaries: [sleepSummary(overrides)] },
+      environment,
+    );
+    assert.equal(rejected.response.status, 400);
+  }
+  assert.equal(environment.DB.rows.length, 0);
+});

@@ -11,6 +11,7 @@ import {
   parseMetricList,
   parsePhoneDailySummaryBatch,
   parseSession,
+  parseSleepSummaryBatch,
   parseStopSession,
 } from "./validation.js";
 
@@ -254,6 +255,43 @@ export function createHealthService(config, { now = () => Date.now() } = {}) {
           status: "PASS",
           generated_at: now(),
           data: result,
+        });
+        return;
+      }
+
+      if (request.method === "POST" && requestUrl.pathname === "/v1/health/sleep-summaries") {
+        const batch = parseSleepSummaryBatch(await readJson(request, config.maxBodyBytes));
+        const result = database.ingestSleepSummaryBatch(batch, now());
+        sendJson(response, result.replayed ? 200 : 202, {
+          ok: true,
+          status: "PASS",
+          generated_at: now(),
+          data: result,
+        });
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/v1/health/sleep-summaries") {
+        const sourceDay = requestUrl.searchParams.get("source_day");
+        if (sourceDay !== null && !/^\d{4}-\d{2}-\d{2}$/.test(sourceDay)) {
+          throw new HttpError(400, "INVALID_QUERY", "source_day must use YYYY-MM-DD");
+        }
+        const limit = parseIntegerQuery(requestUrl.searchParams.get("limit"), "limit", {
+          min: 1,
+          max: 60,
+          defaultValue: 7,
+        });
+        const summaries = database.sleepSummaries({ sourceDay, limit });
+        sendJson(response, 200, {
+          ok: true,
+          status: summaries.length > 0 ? "PASS" : "NO_DATA",
+          generated_at: now(),
+          data: {
+            summaries,
+            query: { source_day: sourceDay, limit },
+            semantics:
+              "one row per source_day; source_day is the local calendar day the wake-up time falls in, taken from the vivo provider and never re-bucketed",
+          },
         });
         return;
       }

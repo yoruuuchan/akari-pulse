@@ -11,6 +11,8 @@ import dev.akari.pulse.bridge.diagnostics.SyncDiagnostics
 import dev.akari.pulse.bridge.diagnostics.TransportDiagnostics
 import dev.akari.pulse.bridge.phonehealth.PhoneHealthStatus
 import dev.akari.pulse.bridge.phonehealth.PhoneTodayActivity
+import dev.akari.pulse.bridge.phonehealth.VivoPrivateHealthCapability
+import dev.akari.pulse.bridge.phonehealth.VivoPrivateHealthSnapshot
 import dev.akari.pulse.bridge.settings.BridgeConfigSummary
 import dev.akari.pulse.bridge.sync.SyncScheduler
 import dev.akari.pulse.bridge.transport.AdapterStartResult
@@ -41,6 +43,7 @@ data class BridgeUiState(
     val queue: QueueStats = QueueStats(0, 0, 0, null, null, null),
     val recentEvents: List<HealthEventEntity> = emptyList(),
     val phoneHealth: PhoneTodayActivity? = null,
+    val vivoPrivateHealth: VivoPrivateHealthSnapshot? = null,
     val sync: SyncDiagnostics = SyncDiagnostics(),
     val transport: TransportDiagnostics = TransportDiagnostics(),
     val notice: UiNotice? = null,
@@ -56,7 +59,10 @@ class BridgeViewModel(
         runtime.repository.observeQueueStats(),
         runtime.repository.observeRecentEvents(),
         runtime.phoneHealth.state,
-    ) { queue, events, phoneHealth -> Triple(queue, events, phoneHealth) }
+        runtime.vivoPrivateHealth.state,
+    ) { queue, events, phoneHealth, vivoPrivateHealth ->
+        RepositoryState(queue, events, phoneHealth, vivoPrivateHealth)
+    }
 
     val uiState: StateFlow<BridgeUiState> = combine(
         runtime.preferences.summary,
@@ -67,9 +73,10 @@ class BridgeViewModel(
     ) { config, sync, transport, repository, currentNotice ->
         BridgeUiState(
             config = config,
-            queue = repository.first,
-            recentEvents = repository.second,
-            phoneHealth = repository.third,
+            queue = repository.queue,
+            recentEvents = repository.recentEvents,
+            phoneHealth = repository.phoneHealth,
+            vivoPrivateHealth = repository.vivoPrivateHealth,
             sync = sync,
             transport = transport,
             notice = currentNotice,
@@ -118,6 +125,25 @@ class BridgeViewModel(
             } catch (error: Exception) {
                 notice.value = UiNotice(
                     "phone health persistence failed · ${error.message ?: error.javaClass.simpleName}",
+                    true,
+                )
+            }
+        }
+    }
+
+    fun readVivoPrivateHealth() {
+        viewModelScope.launch {
+            try {
+                val result = runtime.vivoPrivateHealth.refresh()
+                SyncScheduler.enqueueNow(getApplication(), expedited = true)
+                notice.value = UiNotice(
+                    "vivo private health ${result.capability} · sleep ${result.sleep.status} · " +
+                        "vitals ${result.vitals.status} · persisted and uplink queued",
+                    result.capability != VivoPrivateHealthCapability.GRANTED,
+                )
+            } catch (error: Exception) {
+                notice.value = UiNotice(
+                    "vivo private health persistence failed · ${error.message ?: error.javaClass.simpleName}",
                     true,
                 )
             }
@@ -182,6 +208,13 @@ class BridgeViewModel(
     fun clearNotice() {
         notice.value = null
     }
+
+    private data class RepositoryState(
+        val queue: QueueStats,
+        val recentEvents: List<HealthEventEntity>,
+        val phoneHealth: PhoneTodayActivity?,
+        val vivoPrivateHealth: VivoPrivateHealthSnapshot?,
+    )
 
     private fun notificationNotice(error: Throwable?): UiNotice = if (error == null) {
         UiNotice("notification dispatched; watch execution is unconfirmed", false)

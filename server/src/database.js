@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { HttpError } from "./validation.js";
+import { HttpError, SLEEP_DURATION_KEYS } from "./validation.js";
 
 const DIAGNOSTIC_LAYERS = [
   "watch_module_api",
@@ -12,6 +12,7 @@ const DIAGNOSTIC_LAYERS = [
   "phone_receive",
   "phone_persistence",
   "uplink",
+  "vivo_private_health",
 ];
 
 // These diagnostic event metrics belong to the Android watch-receiver fallback.
@@ -95,6 +96,66 @@ function toDailySummary(row) {
     raw_error_message: row.raw_error_message,
     received_at: row.received_at_ms,
   };
+}
+
+const SLEEP_NULLABLE_NUMBERS = [
+  "source_day_start_ms",
+  "recorder_generation",
+  "score",
+  "deep_sleep_continuity",
+  "night_sleep_duration_ms",
+  "nap_duration_ms",
+  "chart_total_duration_ms",
+  "light_sleep_duration_ms",
+  "deep_sleep_duration_ms",
+  "rem_sleep_duration_ms",
+  "awake_duration_ms",
+  "awake_episode_count",
+  "awake_episode_duration_ms",
+];
+
+function toSleepSummary(row) {
+  if (!row) return null;
+  const summary = {
+    source: row.source,
+    source_day: row.source_day,
+    source_timezone: row.source_timezone,
+    sleep_start: row.sleep_start_ms,
+    sleep_end: row.sleep_end_ms,
+    sampled_at: row.sampled_at,
+    status: row.status,
+    outcome: row.outcome,
+    verification: row.verification,
+    low_accuracy: row.low_accuracy === null ? null : Boolean(row.low_accuracy),
+    total_duration_ms: row.total_duration_ms,
+    stages: parseJson(row.stages_json),
+    received_at: row.received_at_ms,
+  };
+  for (const key of SLEEP_NULLABLE_NUMBERS) summary[key] = row[key];
+  return summary;
+}
+
+function sleepSummaryPayload(summary) {
+  const payload = {
+    source: summary.source,
+    source_day: summary.source_day,
+    source_timezone: summary.source_timezone,
+    source_day_start: summary.source_day_start,
+    sleep_start: summary.sleep_start,
+    sleep_end: summary.sleep_end,
+    sampled_at: summary.sampled_at,
+    status: summary.status,
+    outcome: summary.outcome,
+    verification: summary.verification,
+    recorder_generation: summary.recorder_generation,
+    low_accuracy: summary.low_accuracy,
+    score: summary.score,
+    deep_sleep_continuity: summary.deep_sleep_continuity,
+    awake_episode_count: summary.awake_episode_count,
+    stages: summary.stages,
+  };
+  for (const key of SLEEP_DURATION_KEYS) payload[key] = summary[key];
+  return payload;
 }
 
 function toSession(row) {
@@ -252,7 +313,7 @@ export class HealthDatabase {
       .prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'")
       .get();
     const version = Number(versionRow?.value);
-    if (!Number.isInteger(version) || version < 1 || version > 2) {
+    if (!Number.isInteger(version) || version < 1 || version > 3) {
       throw new Error(`Unsupported Akari Health schema version: ${versionRow?.value ?? "missing"}`);
     }
     if (version < 2) {
@@ -301,6 +362,70 @@ export class HealthDatabase {
             ON daily_summary_batches(received_at_ms DESC);
 
           UPDATE schema_meta SET value = '2' WHERE key = 'schema_version';
+        `);
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      }
+    }
+    if (version < 3) {
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        this.db.exec(`
+          CREATE TABLE sleep_summaries (
+            source TEXT NOT NULL,
+            source_day TEXT NOT NULL,
+            source_timezone TEXT NOT NULL,
+            source_day_start_ms INTEGER,
+            sleep_start_ms INTEGER NOT NULL,
+            sleep_end_ms INTEGER NOT NULL,
+            sampled_at TEXT NOT NULL,
+            sampled_at_ms INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK (status = 'PASS'),
+            outcome TEXT NOT NULL,
+            verification TEXT NOT NULL,
+            recorder_generation INTEGER,
+            low_accuracy INTEGER,
+            score INTEGER,
+            deep_sleep_continuity INTEGER,
+            total_duration_ms INTEGER NOT NULL,
+            night_sleep_duration_ms INTEGER,
+            nap_duration_ms INTEGER,
+            chart_total_duration_ms INTEGER,
+            light_sleep_duration_ms INTEGER,
+            deep_sleep_duration_ms INTEGER,
+            rem_sleep_duration_ms INTEGER,
+            awake_duration_ms INTEGER,
+            awake_episode_count INTEGER,
+            awake_episode_duration_ms INTEGER,
+            stages_json TEXT NOT NULL,
+            received_at_ms INTEGER NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (source, source_day)
+          ) STRICT;
+
+          CREATE INDEX sleep_summaries_day
+            ON sleep_summaries(source_day DESC, source);
+          CREATE INDEX sleep_summaries_sampled
+            ON sleep_summaries(sampled_at_ms DESC);
+
+          CREATE TABLE sleep_summary_batches (
+            batch_id TEXT PRIMARY KEY,
+            producer TEXT NOT NULL,
+            payload_digest TEXT NOT NULL,
+            sent_at_ms INTEGER,
+            received_at_ms INTEGER NOT NULL,
+            summary_count INTEGER NOT NULL,
+            accepted_count INTEGER NOT NULL,
+            duplicate_count INTEGER NOT NULL,
+            stale_count INTEGER NOT NULL
+          ) STRICT;
+
+          CREATE INDEX sleep_summary_batches_received
+            ON sleep_summary_batches(received_at_ms DESC);
+
+          UPDATE schema_meta SET value = '3' WHERE key = 'schema_version';
         `);
         this.db.exec("COMMIT");
       } catch (error) {
@@ -365,6 +490,56 @@ export class HealthDatabase {
         status = ?, outcome = ?, verification = ?, raw_error_code = ?,
         raw_error_message = ?, received_at_ms = ?, payload_json = ?
       WHERE source = ? AND metric = ? AND source_day = ?
+    `);
+    this.getSleepSummaryBatch = this.db.prepare(
+      "SELECT * FROM sleep_summary_batches WHERE batch_id = ?",
+    );
+    this.insertSleepSummaryBatch = this.db.prepare(`
+      INSERT INTO sleep_summary_batches (
+        batch_id, producer, payload_digest, sent_at_ms, received_at_ms,
+        summary_count, accepted_count, duplicate_count, stale_count
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.getSleepSummary = this.db.prepare(
+      "SELECT * FROM sleep_summaries WHERE source = ? AND source_day = ?",
+    );
+    this.upsertSleepSummary = this.db.prepare(`
+      INSERT INTO sleep_summaries (
+        source, source_day, source_timezone, source_day_start_ms, sleep_start_ms,
+        sleep_end_ms, sampled_at, sampled_at_ms, status, outcome, verification,
+        recorder_generation, low_accuracy, score, deep_sleep_continuity,
+        total_duration_ms, night_sleep_duration_ms, nap_duration_ms,
+        chart_total_duration_ms, light_sleep_duration_ms, deep_sleep_duration_ms,
+        rem_sleep_duration_ms, awake_duration_ms, awake_episode_count,
+        awake_episode_duration_ms, stages_json, received_at_ms, payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(source, source_day) DO UPDATE SET
+        source_timezone = excluded.source_timezone,
+        source_day_start_ms = excluded.source_day_start_ms,
+        sleep_start_ms = excluded.sleep_start_ms,
+        sleep_end_ms = excluded.sleep_end_ms,
+        sampled_at = excluded.sampled_at,
+        sampled_at_ms = excluded.sampled_at_ms,
+        status = excluded.status,
+        outcome = excluded.outcome,
+        verification = excluded.verification,
+        recorder_generation = excluded.recorder_generation,
+        low_accuracy = excluded.low_accuracy,
+        score = excluded.score,
+        deep_sleep_continuity = excluded.deep_sleep_continuity,
+        total_duration_ms = excluded.total_duration_ms,
+        night_sleep_duration_ms = excluded.night_sleep_duration_ms,
+        nap_duration_ms = excluded.nap_duration_ms,
+        chart_total_duration_ms = excluded.chart_total_duration_ms,
+        light_sleep_duration_ms = excluded.light_sleep_duration_ms,
+        deep_sleep_duration_ms = excluded.deep_sleep_duration_ms,
+        rem_sleep_duration_ms = excluded.rem_sleep_duration_ms,
+        awake_duration_ms = excluded.awake_duration_ms,
+        awake_episode_count = excluded.awake_episode_count,
+        awake_episode_duration_ms = excluded.awake_episode_duration_ms,
+        stages_json = excluded.stages_json,
+        received_at_ms = excluded.received_at_ms,
+        payload_json = excluded.payload_json
     `);
   }
 
@@ -596,6 +771,134 @@ export class HealthDatabase {
     };
   }
 
+  ingestSleepSummaryBatch(batch, receivedAt = Date.now()) {
+    const payloadDigest = createHash("sha256")
+      .update(JSON.stringify({
+        batch_id: batch.batch_id,
+        producer: batch.producer,
+        sent_at: batch.sent_at,
+        summaries: batch.summaries.map(sleepSummaryPayload),
+      }))
+      .digest("hex");
+    const priorBatch = this.getSleepSummaryBatch.get(batch.batch_id);
+    if (priorBatch) {
+      if (priorBatch.payload_digest !== payloadDigest) {
+        throw new HttpError(409, "BATCH_ID_CONFLICT", "batch_id was already used for a different sleep-summary payload");
+      }
+      return {
+        batch_id: priorBatch.batch_id,
+        accepted: priorBatch.accepted_count,
+        duplicates: priorBatch.duplicate_count,
+        stale: priorBatch.stale_count,
+        received_at: priorBatch.received_at_ms,
+        replayed: true,
+      };
+    }
+
+    let accepted = 0;
+    let duplicates = 0;
+    let stale = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const summary of batch.summaries) {
+        const serializedPayload = JSON.stringify(sleepSummaryPayload(summary));
+        const prior = this.getSleepSummary.get(summary.source, summary.source_day);
+        if (prior && summary.sampled_at_ms < prior.sampled_at_ms) {
+          stale += 1;
+          continue;
+        }
+        if (prior && summary.sampled_at_ms === prior.sampled_at_ms) {
+          if (prior.payload_json !== serializedPayload) {
+            throw new HttpError(
+              409,
+              "SLEEP_SUMMARY_VERSION_CONFLICT",
+              "the same source/source_day and sampled_at was used for different content",
+              { source: summary.source, source_day: summary.source_day },
+            );
+          }
+          duplicates += 1;
+          continue;
+        }
+        this.upsertSleepSummary.run(
+          summary.source,
+          summary.source_day,
+          summary.source_timezone,
+          summary.source_day_start,
+          summary.sleep_start,
+          summary.sleep_end,
+          summary.sampled_at,
+          summary.sampled_at_ms,
+          summary.status,
+          summary.outcome,
+          summary.verification,
+          summary.recorder_generation,
+          summary.low_accuracy === null ? null : summary.low_accuracy ? 1 : 0,
+          summary.score,
+          summary.deep_sleep_continuity,
+          summary.total_duration_ms,
+          summary.night_sleep_duration_ms,
+          summary.nap_duration_ms,
+          summary.chart_total_duration_ms,
+          summary.light_sleep_duration_ms,
+          summary.deep_sleep_duration_ms,
+          summary.rem_sleep_duration_ms,
+          summary.awake_duration_ms,
+          summary.awake_episode_count,
+          summary.awake_episode_duration_ms,
+          JSON.stringify(summary.stages),
+          receivedAt,
+          serializedPayload,
+        );
+        accepted += 1;
+      }
+
+      this.insertSleepSummaryBatch.run(
+        batch.batch_id,
+        batch.producer,
+        payloadDigest,
+        batch.sent_at,
+        receivedAt,
+        batch.summaries.length,
+        accepted,
+        duplicates,
+        stale,
+      );
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+
+    return {
+      batch_id: batch.batch_id,
+      accepted,
+      duplicates,
+      stale,
+      received_at: receivedAt,
+      replayed: false,
+    };
+  }
+
+  sleepSummaries({ sourceDay = null, limit = 7 } = {}) {
+    const clauses = [];
+    const parameters = [];
+    if (sourceDay) {
+      clauses.push("source_day = ?");
+      parameters.push(sourceDay);
+    }
+    parameters.push(limit);
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    return this.db
+      .prepare(`
+        SELECT * FROM sleep_summaries
+        ${where}
+        ORDER BY source_day DESC, source ASC
+        LIMIT ?
+      `)
+      .all(...parameters)
+      .map(toSleepSummary);
+  }
+
   dailySummaries({ sourceDay, metrics = [] }) {
     const clauses = ["source_day = ?"];
     const parameters = [sourceDay];
@@ -709,6 +1012,12 @@ export class HealthDatabase {
     const lastDailySummaryBatch = this.db
       .prepare("SELECT * FROM daily_summary_batches ORDER BY received_at_ms DESC LIMIT 1")
       .get();
+    const lastSleepSummaryBatch = this.db
+      .prepare("SELECT * FROM sleep_summary_batches ORDER BY received_at_ms DESC LIMIT 1")
+      .get();
+    const sleepSummaryCount = this.db
+      .prepare("SELECT COUNT(*) AS count, MAX(source_day) AS latest_day FROM sleep_summaries")
+      .get();
     const latestDiagnostics = this.latest({
       metrics: DIAGNOSTIC_LAYERS.map((layer) => `diagnostic_${layer}`),
       status: null,
@@ -752,6 +1061,8 @@ export class HealthDatabase {
         daily_summary_counts_by_status: Object.fromEntries(
           dailySummaryCounts.map((row) => [row.status, row.count]),
         ),
+        sleep_summary_count: sleepSummaryCount.count,
+        sleep_summary_latest_day: sleepSummaryCount.latest_day,
       },
       last_ingest: lastBatch
         ? {
@@ -770,6 +1081,16 @@ export class HealthDatabase {
             accepted: lastDailySummaryBatch.accepted_count,
             duplicates: lastDailySummaryBatch.duplicate_count,
             stale: lastDailySummaryBatch.stale_count,
+          }
+        : null,
+      last_sleep_summary_ingest: lastSleepSummaryBatch
+        ? {
+            batch_id: lastSleepSummaryBatch.batch_id,
+            producer: lastSleepSummaryBatch.producer,
+            received_at: lastSleepSummaryBatch.received_at_ms,
+            accepted: lastSleepSummaryBatch.accepted_count,
+            duplicates: lastSleepSummaryBatch.duplicate_count,
+            stale: lastSleepSummaryBatch.stale_count,
           }
         : null,
       metric_freshness: metricFreshness,

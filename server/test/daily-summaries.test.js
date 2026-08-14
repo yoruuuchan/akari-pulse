@@ -262,8 +262,12 @@ test("schema version 1 migrates in place without losing watch records", () => {
     });
     initial.close();
 
+    // Rewind to a genuine version-1 database: every table added after version 1 has to go,
+    // otherwise this fixture would not be the shape the migration actually meets in the field.
     const legacy = new DatabaseSync(databasePath);
     legacy.exec(`
+      DROP TABLE sleep_summary_batches;
+      DROP TABLE sleep_summaries;
       DROP TABLE daily_summary_batches;
       DROP TABLE daily_summaries;
       UPDATE schema_meta SET value = '1' WHERE key = 'schema_version';
@@ -271,10 +275,14 @@ test("schema version 1 migrates in place without losing watch records", () => {
     legacy.close();
 
     const migrated = new HealthDatabase(databasePath);
-    assert.equal(migrated.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value, "2");
-    assert.equal(migrated.queryRange({ metrics: ["heart_rate"] })[0].value, 72);
-    assert.equal(migrated.db.prepare("SELECT COUNT(*) AS count FROM daily_summaries").get().count, 0);
-    migrated.close();
+    try {
+      assert.equal(migrated.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value, "3");
+      assert.equal(migrated.queryRange({ metrics: ["heart_rate"] })[0].value, 72);
+      assert.equal(migrated.db.prepare("SELECT COUNT(*) AS count FROM daily_summaries").get().count, 0);
+      assert.equal(migrated.db.prepare("SELECT COUNT(*) AS count FROM sleep_summaries").get().count, 0);
+    } finally {
+      migrated.close();
+    }
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }

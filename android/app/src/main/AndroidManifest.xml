@@ -7,6 +7,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="com.vivo.assistant.StepProvider" />
+    <!--
+      vivo Health private providers (sleep day, latest vitals). This permission is
+      signature|privileged: it is never granted at install time to a third-party build. The owner
+      grants it once over ADB with scripts/bootstrap-vivo-private-health.ps1, and reinstalling the
+      APK clears it again. Declaring it is what makes that grant possible; the app reports
+      NOT_GRANTED rather than substituting data when it is missing.
+    -->
+    <uses-permission android:name="com.vivo.health.widget.permission" />
 
     <application
         android:name=".AkariPulseApplication"

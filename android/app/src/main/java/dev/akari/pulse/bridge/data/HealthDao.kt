@@ -24,6 +24,15 @@ interface HealthDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertPhoneDailySummaryUpload(batch: PhoneDailySummaryUploadEntity)
 
+    @Upsert
+    suspend fun upsertSleepSummary(summary: SleepSummaryEntity)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertSleepSummaryUpload(batch: SleepSummaryUploadEntity)
+
+    @Query("SELECT * FROM sleep_summaries ORDER BY source_day DESC LIMIT 1")
+    fun observeLatestSleepSummary(): Flow<SleepSummaryEntity?>
+
     @Query("SELECT * FROM watch_batches WHERE batch_id = :batchId")
     suspend fun watchBatch(batchId: String): WatchBatchEntity?
 
@@ -108,6 +117,36 @@ interface HealthDao {
         "UPDATE phone_daily_summaries SET synced_at_ms = :syncedAt WHERE source = :source AND source_day = :sourceDay AND sampled_at_ms = :sampledAt",
     )
     suspend fun markPhoneDailySummariesSynced(
+        source: String,
+        sourceDay: String,
+        sampledAt: Long,
+        syncedAt: Long,
+    ): Int
+
+    @Query(
+        "SELECT * FROM sleep_summary_uploads WHERE completed_at_ms IS NULL ORDER BY created_at_ms ASC LIMIT 1",
+    )
+    suspend fun oldestOpenSleepSummaryUpload(): SleepSummaryUploadEntity?
+
+    @Query(
+        "UPDATE sleep_summary_uploads SET attempt_count = attempt_count + 1, last_attempt_at_ms = :attemptedAt, last_error = NULL WHERE batch_id = :batchId",
+    )
+    suspend fun markSleepSummaryUploadAttempted(batchId: String, attemptedAt: Long)
+
+    @Query(
+        "UPDATE sleep_summary_uploads SET last_error = :message, last_attempt_at_ms = :attemptedAt WHERE batch_id = :batchId",
+    )
+    suspend fun markSleepSummaryUploadError(batchId: String, attemptedAt: Long, message: String)
+
+    @Query(
+        "UPDATE sleep_summary_uploads SET completed_at_ms = :completedAt, last_error = NULL WHERE batch_id = :batchId",
+    )
+    suspend fun markSleepSummaryUploadComplete(batchId: String, completedAt: Long)
+
+    @Query(
+        "UPDATE sleep_summaries SET synced_at_ms = :syncedAt WHERE source = :source AND source_day = :sourceDay AND sampled_at_ms = :sampledAt",
+    )
+    suspend fun markSleepSummarySynced(
         source: String,
         sourceDay: String,
         sampledAt: Long,

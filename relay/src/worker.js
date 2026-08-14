@@ -249,6 +249,140 @@ function validateDailySummaryBatch(input) {
   return input;
 }
 
+const SLEEP_SUMMARY_KEYS = new Set([
+  "source",
+  "source_day",
+  "source_timezone",
+  "source_day_start",
+  "sleep_start",
+  "sleep_end",
+  "sampled_at",
+  "status",
+  "outcome",
+  "verification",
+  "recorder_generation",
+  "low_accuracy",
+  "score",
+  "deep_sleep_continuity",
+  "total_duration_ms",
+  "night_sleep_duration_ms",
+  "nap_duration_ms",
+  "chart_total_duration_ms",
+  "light_sleep_duration_ms",
+  "deep_sleep_duration_ms",
+  "rem_sleep_duration_ms",
+  "awake_duration_ms",
+  "awake_episode_count",
+  "awake_episode_duration_ms",
+  "stages",
+]);
+const SLEEP_NUMBER_KEYS = [
+  "source_day_start",
+  "score",
+  "deep_sleep_continuity",
+  "total_duration_ms",
+  "night_sleep_duration_ms",
+  "nap_duration_ms",
+  "chart_total_duration_ms",
+  "light_sleep_duration_ms",
+  "deep_sleep_duration_ms",
+  "rem_sleep_duration_ms",
+  "awake_duration_ms",
+  "awake_episode_count",
+  "awake_episode_duration_ms",
+];
+const SLEEP_STAGE_KEYS = new Set(["light", "deep", "rem", "awake"]);
+const SLEEP_VERIFICATIONS = new Set(["VERIFIED", "UNVERIFIED"]);
+
+function validateSleepSummary(input, path) {
+  if (!isPlainObject(input)) throw new HttpError(400, "INVALID_REQUEST", `${path} must be an object`);
+  const unknown = Object.keys(input).filter((key) => !SLEEP_SUMMARY_KEYS.has(key));
+  if (unknown.length > 0) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path} contains unknown fields: ${unknown.sort().join(", ")}`);
+  }
+  if (input.source !== "vivo_phone") {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.source must be vivo_phone`);
+  }
+  if (input.status !== "PASS") {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.status must be PASS`);
+  }
+  if (input.outcome !== "PROVIDER_CALL_SUCCEEDED") {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.outcome must be PROVIDER_CALL_SUCCEEDED`);
+  }
+  if (!SLEEP_VERIFICATIONS.has(input.verification)) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.verification is not supported`);
+  }
+  expectSourceDay(input.source_day, `${path}.source_day`);
+  expectSourceTimezone(input.source_timezone, `${path}.source_timezone`);
+  expectSampledAt(input.sampled_at, `${path}.sampled_at`);
+  const sleepStart = expectEpoch(input.sleep_start, `${path}.sleep_start`);
+  const sleepEnd = expectEpoch(input.sleep_end, `${path}.sleep_end`);
+  if (sleepStart === 0 || sleepEnd <= sleepStart) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.sleep_end must be after sleep_start`);
+  }
+  if (!Number.isSafeInteger(input.total_duration_ms) || input.total_duration_ms < 0) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.total_duration_ms must be a non-negative integer`);
+  }
+  for (const key of SLEEP_NUMBER_KEYS) {
+    if (input[key] === undefined || input[key] === null) continue;
+    if (!Number.isSafeInteger(input[key]) || input[key] < 0) {
+      throw new HttpError(400, "INVALID_REQUEST", `${path}.${key} must be a non-negative integer`);
+    }
+  }
+  if (
+    input.recorder_generation !== undefined &&
+    input.recorder_generation !== null &&
+    !Number.isSafeInteger(input.recorder_generation)
+  ) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.recorder_generation must be an integer`);
+  }
+  if (input.low_accuracy !== undefined && input.low_accuracy !== null && typeof input.low_accuracy !== "boolean") {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.low_accuracy must be a boolean`);
+  }
+  if (!isPlainObject(input.stages)) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.stages must be an object`);
+  }
+  for (const [stage, intervals] of Object.entries(input.stages)) {
+    if (!SLEEP_STAGE_KEYS.has(stage)) {
+      throw new HttpError(400, "INVALID_REQUEST", `${path}.stages contains unknown stage ${stage}`);
+    }
+    if (!Array.isArray(intervals) || intervals.length > 500) {
+      throw new HttpError(400, "INVALID_REQUEST", `${path}.stages.${stage} must be an array of at most 500 intervals`);
+    }
+    intervals.forEach((interval, index) => {
+      if (!isPlainObject(interval)) {
+        throw new HttpError(400, "INVALID_REQUEST", `${path}.stages.${stage}[${index}] must be an object`);
+      }
+      const start = expectEpoch(interval.start, `${path}.stages.${stage}[${index}].start`);
+      const end = expectEpoch(interval.end, `${path}.stages.${stage}[${index}].end`);
+      if (end < start) {
+        throw new HttpError(400, "INVALID_REQUEST", `${path}.stages.${stage}[${index}].end is before start`);
+      }
+    });
+  }
+}
+
+function validateSleepSummaryBatch(input) {
+  if (!isPlainObject(input)) throw new HttpError(400, "INVALID_REQUEST", "body must be an object");
+  const allowed = new Set(["batch_id", "producer", "sent_at", "summaries"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) {
+    throw new HttpError(400, "INVALID_REQUEST", `body contains unknown fields: ${unknown.sort().join(", ")}`);
+  }
+  expectString(input.batch_id, "body.batch_id");
+  expectString(input.producer, "body.producer");
+  if (input.sent_at !== undefined && input.sent_at !== null) expectEpoch(input.sent_at, "body.sent_at");
+  if (!Array.isArray(input.summaries) || input.summaries.length < 1 || input.summaries.length > 30) {
+    throw new HttpError(400, "INVALID_REQUEST", "body.summaries must contain between 1 and 30 summaries");
+  }
+  input.summaries.forEach((summary, index) => validateSleepSummary(summary, `body.summaries[${index}]`));
+  const keys = input.summaries.map((summary) => `${summary.source} ${summary.source_day}`);
+  if (new Set(keys).size !== keys.length) {
+    throw new HttpError(400, "INVALID_REQUEST", "body.summaries contains duplicate source/source_day keys");
+  }
+  return input;
+}
+
 function json(statusCode, body) {
   return new Response(JSON.stringify(body), {
     status: statusCode,
@@ -285,9 +419,8 @@ async function readBody(request) {
   }
 }
 
-async function handleIngest(request, env, now, { validate, targetPath, itemKey }) {
+async function handleIngest(request, env, now, { validate, targetPath, itemKey, expectedToken, reportsStale }) {
   const token = request.headers.get("x-akari-bridge-token") || "";
-  const expectedToken = itemKey === "summaries" ? env.PHONE_INGEST_TOKEN : env.INGEST_TOKEN;
   if (!expectedToken || token !== expectedToken) {
     return failure(401, "UNAUTHORIZED", "a valid X-Akari-Bridge-Token is required", now);
   }
@@ -317,7 +450,7 @@ async function handleIngest(request, env, now, { validate, targetPath, itemKey }
         batch_id: batch.batch_id,
         accepted: itemCount,
         duplicates: 0,
-        ...(itemKey === "summaries" ? { stale: 0 } : {}),
+        ...(reportsStale ? { stale: 0 } : {}),
         received_at: existing.received_at,
         replayed: true,
       },
@@ -416,6 +549,8 @@ export default {
           validate: validateBatch,
           targetPath: "/v1/health/batches",
           itemKey: "events",
+          expectedToken: env.INGEST_TOKEN,
+          reportsStale: false,
         });
       }
       if (request.method === "POST" && url.pathname === "/v1/health/daily-summaries") {
@@ -423,6 +558,17 @@ export default {
           validate: validateDailySummaryBatch,
           targetPath: "/v1/health/daily-summaries",
           itemKey: "summaries",
+          expectedToken: env.PHONE_INGEST_TOKEN,
+          reportsStale: true,
+        });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/health/sleep-summaries") {
+        return await handleIngest(request, env, now, {
+          validate: validateSleepSummaryBatch,
+          targetPath: "/v1/health/sleep-summaries",
+          itemKey: "summaries",
+          expectedToken: env.PHONE_INGEST_TOKEN,
+          reportsStale: true,
         });
       }
       if (url.pathname.startsWith("/v1/relay/")) {

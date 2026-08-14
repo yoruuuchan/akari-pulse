@@ -115,12 +115,18 @@ class AkariHealthClient(
     }
 
     suspend fun uploadDailySummaries(payload: JsonObject): DailySummaryUploadAcknowledgement =
+        uploadSummaryBatch("/v1/health/daily-summaries", payload)
+
+    suspend fun uploadSleepSummaries(payload: JsonObject): DailySummaryUploadAcknowledgement =
+        uploadSummaryBatch("/v1/health/sleep-summaries", payload)
+
+    private suspend fun uploadSummaryBatch(path: String, payload: JsonObject): DailySummaryUploadAcknowledgement =
         withContext(Dispatchers.IO) {
             val config = preferences.load()
             val baseUrl = ServerUrlPolicy.validate(config.serverBaseUrl, config.allowTailnetHttp)
             val expectedBatchId = payload.getValue("batch_id").jsonPrimitive.content
             val request = Request.Builder()
-                .url("$baseUrl/v1/health/daily-summaries")
+                .url("$baseUrl$path")
                 .post(payload.toString().toRequestBody(mediaType))
                 .header("Accept", "application/json")
                 .apply {

@@ -207,3 +207,171 @@ test("official MCP client lists and invokes the Akari Health stdio tools", async
 
   assert.ok(stderr.some((line) => line.includes("MCP listening on stdio")));
 });
+
+test("MCP answers phone sleep and phone vitals beside the watch, with explicit sources", async () => {
+  const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "akari-mcp-vivo-test-"));
+  const token = "mcp-vivo-token";
+  const service = createHealthService({
+    host: "127.0.0.1",
+    port: 0,
+    token,
+    databasePath: path.join(temporaryDirectory, "health.sqlite"),
+    maxBodyBytes: 1024 * 1024,
+  });
+  const address = await service.listen();
+  const serviceUrl = `http://127.0.0.1:${address.port}`;
+  const post = async (route, body) => {
+    const response = await fetch(`${serviceUrl}${route}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 202);
+  };
+
+  // Synthetic fixture values: the shape is the verified one, the numbers are not anyone's.
+  const sleepStart = Date.parse("2026-01-02T01:00:00+08:00");
+  const sleepEnd = Date.parse("2026-01-02T09:00:00+08:00");
+  const watchAt = Date.parse("2026-01-02T18:00:00+08:00");
+  const phoneAt = Date.parse("2026-01-02T19:30:00+08:00");
+
+  await post("/v1/health/sleep-summaries", {
+    batch_id: "mcp-sleep-fixture",
+    producer: "akari-pulse-android-fixture",
+    summaries: [{
+      source: "vivo_phone",
+      source_day: "2026-01-02",
+      source_timezone: "Asia/Shanghai",
+      source_day_start: Date.parse("2026-01-02T00:00:00+08:00"),
+      sleep_start: sleepStart,
+      sleep_end: sleepEnd,
+      sampled_at: "2026-01-02T20:00:00+08:00",
+      status: "PASS",
+      outcome: "PROVIDER_CALL_SUCCEEDED",
+      verification: "VERIFIED",
+      recorder_generation: 2,
+      low_accuracy: false,
+      score: 64,
+      deep_sleep_continuity: 90,
+      total_duration_ms: 26_400_000,
+      night_sleep_duration_ms: 26_400_000,
+      nap_duration_ms: 0,
+      chart_total_duration_ms: 28_800_000,
+      light_sleep_duration_ms: 17_400_000,
+      deep_sleep_duration_ms: 3_600_000,
+      rem_sleep_duration_ms: 5_400_000,
+      awake_duration_ms: 2_400_000,
+      awake_episode_count: 2,
+      awake_episode_duration_ms: 1_200_000,
+      stages: { deep: [{ start: sleepStart + 3_600_000, end: sleepStart + 7_200_000 }] },
+    }],
+  });
+
+  await post("/v1/health/batches", {
+    batch_id: "mcp-vivo-vitals-fixture",
+    producer: "akari-pulse-android-fixture",
+    events: [
+      ["heart_rate", 71, "bpm", "WA2456C", watchAt],
+      ["spo2", 98, "%", "WA2456C", watchAt],
+      ["stress", 41, "", "WA2456C", watchAt],
+      ["phone_heart_rate", 70, "bpm", "vivo_phone", phoneAt],
+      ["phone_spo2", 96, "%", "vivo_phone", phoneAt - 600_000],
+      ["phone_stress", 30, "score", "vivo_phone", phoneAt - 300_000],
+    ].map(([metric, value, unit, device, timestamp]) => ({
+      event_id: `${metric}-${timestamp}`,
+      timestamp,
+      metric,
+      value,
+      ...(unit === "" ? {} : { unit }),
+      source_device: device,
+      ...(device === "vivo_phone"
+        ? {
+            source_module: "VIVO_WATCH",
+            source_api: "com.vivo.health.provider.care/healthCare#MYSELF_DATA",
+            quality: "latest_snapshot",
+          }
+        : {}),
+      status: "PASS",
+    })),
+  });
+
+  const environment = Object.fromEntries(
+    Object.entries(process.env).filter((entry) => typeof entry[1] === "string"),
+  );
+  environment.AKARI_HEALTH_URL = serviceUrl;
+  environment.AKARI_HEALTH_TOKEN = token;
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [mcpEntry],
+    env: environment,
+    stderr: "pipe",
+  });
+  const client = new Client(
+    { name: "akari-health-vivo-e2e-test", version: "0.1.0" },
+    { versionNegotiation: { mode: "auto" } },
+  );
+
+  try {
+    await client.connect(transport);
+
+    const sleep = await client.callTool({ name: "health_sleep", arguments: {} });
+    assert.equal(sleep.structuredContent.status, "PASS");
+    const night = sleep.structuredContent.data.phone_sleep.summaries[0];
+    assert.equal(night.source, "vivo_phone");
+    assert.equal(night.source_day, "2026-01-02");
+    assert.equal(night.sleep_start, sleepStart);
+    assert.equal(night.sleep_end, sleepEnd);
+    assert.equal(night.total_duration_ms, 26_400_000);
+    assert.equal(night.deep_sleep_duration_ms, 3_600_000);
+    assert.equal(night.light_sleep_duration_ms, 17_400_000);
+    assert.equal(night.rem_sleep_duration_ms, 5_400_000);
+    assert.equal(night.awake_episode_count, 2);
+    assert.equal(night.awake_episode_duration_ms, 1_200_000);
+    assert.equal(night.score, 64);
+    assert.equal(night.deep_sleep_continuity, 90);
+    assert.match(sleep.content[0].text, /sources are returned side by side; no merge or precedence/);
+
+    const datedSleep = await client.callTool({
+      name: "health_sleep",
+      arguments: { date: "2026-01-03" },
+    });
+    assert.deepEqual(datedSleep.structuredContent.data.phone_sleep.summaries, []);
+
+    for (const [tool, watchMetric, phoneMetric, watchValue, phoneValue] of [
+      ["health_heart_rate", "heart_rate", "phone_heart_rate", 71, 70],
+      ["health_spo2", "spo2", "phone_spo2", 98, 96],
+      ["health_stress", "stress", "phone_stress", 41, 30],
+    ]) {
+      const result = await client.callTool({ name: tool, arguments: {} });
+      const byMetric = Object.fromEntries(
+        result.structuredContent.data.records.map((record) => [record.metric, record]),
+      );
+      assert.equal(byMetric[watchMetric].value, watchValue, `${tool} watch value`);
+      assert.equal(byMetric[watchMetric].source_device, "WA2456C");
+      assert.equal(byMetric[phoneMetric].value, phoneValue, `${tool} phone value`);
+      assert.equal(byMetric[phoneMetric].source_device, "vivo_phone");
+      assert.match(result.content[0].text, /side by side; no merge or precedence/);
+    }
+
+    const windowed = await client.callTool({
+      name: "health_heart_rate",
+      arguments: { at: watchAt, window_ms: 60_000 },
+    });
+    assert.equal(windowed.structuredContent.data.record.value, 71);
+    assert.equal(windowed.structuredContent.data.phone_latest_snapshot.value, 70);
+    assert.match(
+      windowed.structuredContent.data.phone_latest_snapshot_semantics,
+      /not a daily aggregate/,
+    );
+
+    const status = await client.callTool({ name: "health_status", arguments: {} });
+    assert.equal(status.structuredContent.data.database.sleep_summary_count, 1);
+    assert.equal(status.structuredContent.data.database.sleep_summary_latest_day, "2026-01-02");
+    assert.equal(status.structuredContent.data.layers.vivo_private_health.status, "NO_DATA");
+  } finally {
+    await client.close();
+    await service.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});

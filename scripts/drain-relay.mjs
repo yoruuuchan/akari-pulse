@@ -1,7 +1,7 @@
 // Drain the Cloudflare relay buffer into the local Akari Health service.
-// Pulls pending watch-event or phone daily-summary batches from the relay, re-POSTs
-// each unchanged payload to its recorded local route, and deletes a relay row only
-// after the local service acknowledged that exact batch. Run it manually or from a
+// Pulls pending watch-event, phone daily-summary, or phone sleep-summary batches from the
+// relay, re-POSTs each unchanged payload to its recorded local route, and deletes a relay
+// row only after the local service acknowledged that exact batch. Run it manually or from a
 // scheduled task.
 //
 // Environment:
@@ -42,11 +42,13 @@ async function fetchPending() {
 
 async function ingestLocally(batch) {
   const targetPath = batch.target_path || "/v1/health/batches";
-  if (!["/v1/health/batches", "/v1/health/daily-summaries"].includes(targetPath)) {
+  if (
+    !["/v1/health/batches", "/v1/health/daily-summaries", "/v1/health/sleep-summaries"].includes(targetPath)
+  ) {
     throw new Error(`relay returned unsupported target path for ${batch.batch_id}: ${targetPath}`);
   }
-  const isDailySummary = targetPath === "/v1/health/daily-summaries";
-  const itemCount = isDailySummary ? batch.payload.summaries?.length : batch.payload.events?.length;
+  const isSummary = targetPath !== "/v1/health/batches";
+  const itemCount = isSummary ? batch.payload.summaries?.length : batch.payload.events?.length;
   if (!Number.isInteger(itemCount) || itemCount < 1) {
     throw new Error(`relay returned an invalid payload for ${batch.batch_id}`);
   }
@@ -61,7 +63,7 @@ async function ingestLocally(batch) {
   const data = body && body.data;
   const accepted = data && data.accepted;
   const duplicates = data && data.duplicates;
-  const stale = isDailySummary ? data && data.stale : 0;
+  const stale = isSummary ? data && data.stale : 0;
   const countsValid =
     Number.isInteger(accepted) && accepted >= 0 &&
     Number.isInteger(duplicates) && duplicates >= 0 &&

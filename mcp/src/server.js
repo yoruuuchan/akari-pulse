@@ -90,6 +90,45 @@ function summarizeStepSources(payload) {
   return `${parts.join(" · ")} · sources are returned side by side; no merge or precedence`;
 }
 
+function formatDuration(milliseconds) {
+  if (!Number.isFinite(milliseconds)) return "unknown";
+  const minutes = Math.round(milliseconds / 60000);
+  return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+function summarizePhoneSleep(summary) {
+  if (!summary) return "phone: no vivo sleep day stored";
+  const parts = [
+    `phone (${summary.source}) ${summary.source_day}`,
+    `asleep ${new Date(summary.sleep_start).toISOString()} → awake ${new Date(summary.sleep_end).toISOString()}`,
+    `total ${formatDuration(summary.total_duration_ms)}`,
+  ];
+  if (summary.deep_sleep_duration_ms !== null) parts.push(`deep ${formatDuration(summary.deep_sleep_duration_ms)}`);
+  if (summary.light_sleep_duration_ms !== null) parts.push(`light ${formatDuration(summary.light_sleep_duration_ms)}`);
+  if (summary.rem_sleep_duration_ms !== null) parts.push(`rem ${formatDuration(summary.rem_sleep_duration_ms)}`);
+  if (summary.awake_episode_count !== null) {
+    parts.push(`wake-ups ${summary.awake_episode_count} · ${formatDuration(summary.awake_episode_duration_ms)}`);
+  }
+  if (summary.score !== null) parts.push(`score ${summary.score}`);
+  if (summary.deep_sleep_continuity !== null) parts.push(`deep continuity ${summary.deep_sleep_continuity}`);
+  return parts.join(" · ");
+}
+
+function summarizeSideBySide(payload, watchMetric, phoneMetric) {
+  const records = payload.data.records;
+  const describe = (metric, label) => {
+    const record = records.find((candidate) => candidate.metric === metric);
+    if (!record) return `${label}: no observation`;
+    const value = Object.hasOwn(record, "value") ? JSON.stringify(record.value) : record.status;
+    return `${label} (${record.source_device}): ${value}${record.unit ? ` ${record.unit}` : ""} · ${new Date(record.timestamp).toISOString()}`;
+  };
+  return [
+    describe(watchMetric, "watch"),
+    describe(phoneMetric, "phone"),
+    "sources are returned side by side; no merge or precedence",
+  ].join(" · ");
+}
+
 function reflectRecordStatus(payload) {
   const records = payload.data.records;
   if (records.length === 0 || records.some((record) => record.status === "PASS")) return payload;
@@ -181,7 +220,8 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
     "health_heart_rate",
     {
       title: "Heart rate near a time",
-      description: "Read the latest heart rate, or the nearest real sample within a bounded window around a timestamp.",
+      description:
+        "Without a timestamp, return the latest watch heart rate and the latest vivo phone heart rate side by side. With a timestamp, return the nearest real watch sample within a bounded window, plus the phone's latest snapshot for context. The phone value is a single latest point, never a daily aggregate.",
       inputSchema: z.object({
         at: timeInput.optional(),
         window_ms: z.number().int().min(1000).max(3600000).default(300000),
@@ -192,8 +232,8 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
     async ({ at, window_ms }) =>
       invoke(async () => {
         if (at === undefined) {
-          const payload = await api.request("/v1/health/latest?metric=heart_rate");
-          return textResult(payload, summarizeLatest(payload, "heart_rate"));
+          const payload = await api.request("/v1/health/latest?metrics=heart_rate,phone_heart_rate");
+          return textResult(payload, summarizeSideBySide(payload, "heart_rate", "phone_heart_rate"));
         }
         const requestedAt = asEpoch(at, "at");
         const payload = await api.request(
@@ -212,6 +252,7 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
               : best,
           null,
         );
+        const phoneLatest = await api.request("/v1/health/latest?metric=phone_heart_rate");
         const result = {
           ok: true,
           status: nearest ? "PASS" : "NO_DATA",
@@ -221,6 +262,9 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
             window_ms,
             record: nearest,
             distance_ms: nearest ? Math.abs(nearest.timestamp - requestedAt) : null,
+            phone_latest_snapshot: phoneLatest.data.records[0] ?? null,
+            phone_latest_snapshot_semantics:
+              "the vivo phone provider exposes only its newest single point; it is not a windowed sample and not a daily aggregate",
           },
         };
         return textResult(
@@ -315,16 +359,21 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
     "health_sleep",
     {
       title: "Sleep observations",
-      description: "Read sleep status, sleep-unit, and sleep-stage observations in a bounded time range. No stage or duration is inferred when records are absent.",
+      description:
+        "Read sleep from both sources side by side: raw watch sleep observations in a bounded time range, and vivo phone sleep days (fell asleep, woke up, total, deep, light, REM, wake-ups, score, deep-sleep continuity). A phone sleep day is attributed to the local calendar day of its wake-up time. No stage or duration is inferred when a source does not report it.",
       inputSchema: z.object({
         from: timeInput.optional(),
         to: timeInput.optional(),
         limit: z.number().int().min(1).max(2000).default(1000),
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+          .describe("Phone sleep day to return. Omit for the most recent stored sleep days."),
+        sleep_days: z.number().int().min(1).max(60).default(7)
+          .describe("How many phone sleep days to return when no date is given."),
       }),
       outputSchema,
       annotations: readAnnotations,
     },
-    async ({ from, to, limit }) =>
+    async ({ from, to, limit, date, sleep_days }) =>
       invoke(async () => {
         const toEpoch = to === undefined ? Date.now() : asEpoch(to, "to");
         const fromEpoch = from === undefined ? Math.max(0, toEpoch - 48 * 3600000) : asEpoch(from, "from");
@@ -339,10 +388,26 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
           ])}`,
         );
         reflectRecordStatus(payload);
+        const phone = await api.request(
+          `/v1/health/sleep-summaries${queryString([
+            ["source_day", date],
+            ["limit", date ? 1 : sleep_days],
+          ])}`,
+        );
+        payload.data.phone_sleep = {
+          status: phone.status,
+          summaries: phone.data.summaries,
+          semantics: phone.data.semantics,
+        };
+        if (phone.data.summaries.length > 0) payload.status = "PASS";
         const statuses = [...new Set(payload.data.records.map((record) => record.status))];
         return textResult(
           payload,
-          `${payload.data.records.length} sleep observations returned${statuses.length > 0 ? ` (${statuses.join(", ")})` : ""}`,
+          [
+            `watch: ${payload.data.records.length} sleep observations${statuses.length > 0 ? ` (${statuses.join(", ")})` : ""}`,
+            summarizePhoneSleep(phone.data.summaries[0]),
+            "sources are returned side by side; no merge or precedence",
+          ].join(" · "),
         );
       }),
   );
@@ -377,11 +442,13 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
     ["health_spo2", "spo2", "Blood oxygen"],
     ["health_stress", "stress", "Stress"],
   ]) {
+    const phoneMetric = `phone_${metric}`;
     server.registerTool(
       toolName,
       {
         title,
-        description: `Read the latest ${metric} observation, or bounded raw observations when a time range is supplied.`,
+        description:
+          `Read the latest watch ${metric} and the latest vivo phone ${metric} side by side, or bounded raw observations from both sources when a time range is supplied. The phone value is a single latest point, never a daily aggregate.`,
         inputSchema: z.object({
           from: timeInput.optional(),
           to: timeInput.optional(),
@@ -393,16 +460,16 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
       async ({ from, to, limit }) =>
         invoke(async () => {
           if (from === undefined && to === undefined) {
-            const payload = await api.request(`/v1/health/latest?metric=${metric}&status=ALL`);
+            const payload = await api.request(`/v1/health/latest?metrics=${metric},${phoneMetric}&status=ALL`);
             reflectRecordStatus(payload);
-            return textResult(payload, summarizeLatest(payload, metric));
+            return textResult(payload, summarizeSideBySide(payload, metric, phoneMetric));
           }
           const toEpoch = to === undefined ? Date.now() : asEpoch(to, "to");
           const fromEpoch = from === undefined ? 0 : asEpoch(from, "from");
           if (fromEpoch > toEpoch) throw new Error("from cannot be after to");
           const payload = await api.request(
             `/v1/health/range${queryString([
-              ["metric", metric],
+              ["metrics", `${metric},${phoneMetric}`],
               ["from", fromEpoch],
               ["to", toEpoch],
               ["limit", limit],

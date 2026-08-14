@@ -6,6 +6,8 @@ import dev.akari.pulse.bridge.data.BridgeRepository
 import dev.akari.pulse.bridge.diagnostics.DiagnosticsStore
 import dev.akari.pulse.bridge.network.AkariHealthClient
 import dev.akari.pulse.bridge.phonehealth.PhoneHealthController
+import dev.akari.pulse.bridge.phonehealth.VivoPrivateHealthController
+import dev.akari.pulse.bridge.phonehealth.VivoPrivateHealthReader
 import dev.akari.pulse.bridge.phonehealth.VivoTodayActivityReader
 import dev.akari.pulse.bridge.settings.BridgePreferences
 import dev.akari.pulse.bridge.sync.SyncScheduler
@@ -29,6 +31,7 @@ class AkariPulseApplication : Application() {
         val client = AkariHealthClient(preferences)
         val repository = BridgeRepository(database, client, diagnostics)
         val phoneHealth = PhoneHealthController(VivoTodayActivityReader(this), repository)
+        val vivoPrivateHealth = VivoPrivateHealthController(VivoPrivateHealthReader(this), repository)
         val officialRpc = OfficialRpcReceiverAdapter(
             context = this,
             preferences = preferences,
@@ -42,6 +45,7 @@ class AkariPulseApplication : Application() {
             repository = repository,
             officialRpc = officialRpc,
             phoneHealth = phoneHealth,
+            vivoPrivateHealth = vivoPrivateHealth,
         )
         SyncScheduler.ensurePeriodic(this)
         if (BuildConfig.VIVO_RPC_APP_ID > 0 && preferences.summary.value.hasRpcEncryption) {
@@ -57,4 +61,5 @@ data class BridgeRuntime(
     val repository: BridgeRepository,
     val officialRpc: OfficialRpcReceiverAdapter,
     val phoneHealth: PhoneHealthController,
+    val vivoPrivateHealth: VivoPrivateHealthController,
 )

@@ -331,6 +331,182 @@ export function parsePhoneDailySummaryBatch(input) {
   };
 }
 
+const SLEEP_SUMMARY_KEYS = new Set([
+  "source",
+  "source_day",
+  "source_timezone",
+  "source_day_start",
+  "sleep_start",
+  "sleep_end",
+  "sampled_at",
+  "status",
+  "outcome",
+  "verification",
+  "recorder_generation",
+  "low_accuracy",
+  "score",
+  "deep_sleep_continuity",
+  "total_duration_ms",
+  "night_sleep_duration_ms",
+  "nap_duration_ms",
+  "chart_total_duration_ms",
+  "light_sleep_duration_ms",
+  "deep_sleep_duration_ms",
+  "rem_sleep_duration_ms",
+  "awake_duration_ms",
+  "awake_episode_count",
+  "awake_episode_duration_ms",
+  "stages",
+]);
+
+export const SLEEP_DURATION_KEYS = [
+  "total_duration_ms",
+  "night_sleep_duration_ms",
+  "nap_duration_ms",
+  "chart_total_duration_ms",
+  "light_sleep_duration_ms",
+  "deep_sleep_duration_ms",
+  "rem_sleep_duration_ms",
+  "awake_duration_ms",
+  "awake_episode_duration_ms",
+];
+
+const SLEEP_COUNT_KEYS = ["score", "deep_sleep_continuity", "awake_episode_count"];
+const SLEEP_STAGE_KEYS = new Set(["light", "deep", "rem", "awake"]);
+const SLEEP_VERIFICATIONS = new Set(["VERIFIED", "UNVERIFIED"]);
+
+function parseSleepStages(input, path) {
+  const value = expectObject(input, path);
+  const unknown = Object.keys(value).filter((key) => !SLEEP_STAGE_KEYS.has(key));
+  if (unknown.length > 0) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path} contains unknown sleep stages`, { fields: unknown });
+  }
+  const stages = {};
+  for (const [stage, intervals] of Object.entries(value)) {
+    if (!Array.isArray(intervals) || intervals.length > 500) {
+      throw new HttpError(400, "INVALID_REQUEST", `${path}.${stage} must be an array of at most 500 intervals`);
+    }
+    stages[stage] = intervals.map((interval, index) => {
+      const entry = expectObject(interval, `${path}.${stage}[${index}]`);
+      const unknownKeys = Object.keys(entry).filter((key) => key !== "start" && key !== "end");
+      if (unknownKeys.length > 0) {
+        throw new HttpError(400, "INVALID_REQUEST", `${path}.${stage}[${index}] contains unknown fields`, {
+          fields: unknownKeys,
+        });
+      }
+      const start = expectEpoch(entry.start, `${path}.${stage}[${index}].start`);
+      const end = expectEpoch(entry.end, `${path}.${stage}[${index}].end`);
+      if (end < start) {
+        throw new HttpError(400, "INVALID_REQUEST", `${path}.${stage}[${index}].end is before start`);
+      }
+      return { start, end };
+    });
+  }
+  return stages;
+}
+
+export function parseSleepSummary(input, path = "summary") {
+  const value = expectObject(input, path);
+  const unknown = Object.keys(value).filter((key) => !SLEEP_SUMMARY_KEYS.has(key));
+  if (unknown.length > 0) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path} contains unknown fields`, { fields: unknown });
+  }
+  if (value.source !== "vivo_phone") {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.source must be vivo_phone`);
+  }
+  // Only observed sleep days are transmitted. Absence and failure travel on the
+  // diagnostic_vivo_private_health event, so a placeholder row can never displace a real one.
+  if (value.status !== "PASS") {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.status must be PASS`);
+  }
+  if (value.outcome !== "PROVIDER_CALL_SUCCEEDED") {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.outcome must be PROVIDER_CALL_SUCCEEDED`);
+  }
+  const verification = expectString(value.verification, `${path}.verification`, { max: 64 });
+  if (!SLEEP_VERIFICATIONS.has(verification)) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.verification is not supported`);
+  }
+  const sleepStart = expectEpoch(value.sleep_start, `${path}.sleep_start`);
+  const sleepEnd = expectEpoch(value.sleep_end, `${path}.sleep_end`);
+  if (sleepStart === 0 || sleepEnd <= sleepStart) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.sleep_end must be after sleep_start`);
+  }
+  const sampledAt = expectSampledAt(value.sampled_at, `${path}.sampled_at`);
+
+  const durations = {};
+  for (const key of SLEEP_DURATION_KEYS) {
+    durations[key] = optionalNonNegativeInteger(value[key], `${path}.${key}`);
+  }
+  if (durations.total_duration_ms === null) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.total_duration_ms is required`);
+  }
+  const counts = {};
+  for (const key of SLEEP_COUNT_KEYS) {
+    counts[key] = optionalNonNegativeInteger(value[key], `${path}.${key}`);
+  }
+  if (value.low_accuracy !== undefined && value.low_accuracy !== null && typeof value.low_accuracy !== "boolean") {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.low_accuracy must be a boolean`);
+  }
+  if (
+    value.recorder_generation !== undefined &&
+    value.recorder_generation !== null &&
+    !Number.isSafeInteger(value.recorder_generation)
+  ) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.recorder_generation must be an integer`);
+  }
+
+  return {
+    source: value.source,
+    source_day: expectSourceDay(value.source_day, `${path}.source_day`),
+    source_timezone: expectSourceTimezone(value.source_timezone, `${path}.source_timezone`),
+    source_day_start:
+      value.source_day_start === undefined || value.source_day_start === null
+        ? null
+        : expectEpoch(value.source_day_start, `${path}.source_day_start`),
+    sleep_start: sleepStart,
+    sleep_end: sleepEnd,
+    sampled_at: sampledAt.text,
+    sampled_at_ms: sampledAt.epoch,
+    status: value.status,
+    outcome: value.outcome,
+    verification,
+    recorder_generation:
+      value.recorder_generation === undefined || value.recorder_generation === null
+        ? null
+        : value.recorder_generation,
+    low_accuracy:
+      value.low_accuracy === undefined || value.low_accuracy === null ? null : value.low_accuracy,
+    ...counts,
+    ...durations,
+    stages: parseSleepStages(value.stages, `${path}.stages`),
+  };
+}
+
+export function parseSleepSummaryBatch(input) {
+  const value = expectObject(input, "body");
+  const allowed = new Set(["batch_id", "producer", "sent_at", "summaries"]);
+  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) {
+    throw new HttpError(400, "INVALID_REQUEST", "body contains unknown fields", { fields: unknown });
+  }
+  if (!Array.isArray(value.summaries) || value.summaries.length < 1 || value.summaries.length > 30) {
+    throw new HttpError(400, "INVALID_REQUEST", "body.summaries must contain between 1 and 30 summaries");
+  }
+  const summaries = value.summaries.map((summary, index) =>
+    parseSleepSummary(summary, `body.summaries[${index}]`),
+  );
+  const keys = summaries.map((summary) => `${summary.source} ${summary.source_day}`);
+  if (new Set(keys).size !== keys.length) {
+    throw new HttpError(400, "INVALID_REQUEST", "body.summaries contains duplicate source/source_day keys");
+  }
+  return {
+    batch_id: expectString(value.batch_id, "body.batch_id", { max: 128 }),
+    producer: expectString(value.producer, "body.producer", { max: 128 }),
+    sent_at: value.sent_at === undefined || value.sent_at === null ? null : expectEpoch(value.sent_at, "body.sent_at"),
+    summaries,
+  };
+}
+
 export function parseCorrelationEvent(input) {
   const value = expectObject(input, "body");
   const allowed = new Set(["event_id", "timestamp", "source", "event_type", "session_id", "metadata"]);
