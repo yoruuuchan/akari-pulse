@@ -1,6 +1,7 @@
 package dev.akari.pulse.bridge.sync
 
 import android.content.Context
+import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.WorkerParameters
@@ -13,6 +14,13 @@ class UplinkWorker(
 ) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
         val application = applicationContext as AkariPulseApplication
+        // Collect fresh provider readings before uploading, so the periodic sync ships current
+        // data instead of only draining whatever a manual button press left in the outbox.
+        // A failed collection never blocks the upload of already-persisted records.
+        runCatching { application.runtime.phoneHealth.refresh() }
+            .onFailure { Log.w(LOG_TAG, "phone health collection failed", it) }
+        runCatching { application.runtime.vivoPrivateHealth.refresh() }
+            .onFailure { Log.w(LOG_TAG, "vivo private health collection failed", it) }
         while (true) {
             when (val result = application.runtime.repository.syncOne()) {
                 SyncOneResult.NoWork -> Unit
@@ -45,5 +53,9 @@ class UplinkWorker(
                 }
             }
         }
+    }
+
+    private companion object {
+        const val LOG_TAG = "AkariUplinkWorker"
     }
 }
