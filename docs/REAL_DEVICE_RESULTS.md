@@ -1,281 +1,202 @@
-# Real-device results
+# Real-device verification results
 
-This file is the durable source of truth for physical-watch observations. A host build, package audit, simulator result, OrbitV progress indicator, or API documentation entry is not a device pass.
+This document records **capability evidence**, not the operator's personal health log.
 
-## Device baseline
+Exact heart-rate, SpO2, stress, step, distance, calorie, sleep, account, token, private endpoint, batch-ID, and device-identifier values are intentionally omitted from the public repository. A real-device result is considered verified when the source/API/provider, status semantics, and UI or downstream contract behavior were observed on the named device.
 
-- watch: vivo WATCH GT, first-generation Bluetooth model `WA2456C`
-- BlueOS: `3.0`
-- watch software: `DPD2346C_A_1.54.5`
-- watch hardware previously reported: `MP_0.1`
-- installation path: OrbitV
-- phone: vivo X200 Pro with vivo Health installed
+## Verified baseline
 
-Do not include a MAC address, serial number, account identifier, token, SDK key, or authentication cookie in this file.
+### Watch
 
-## Confirmed version history
+- Device family: vivo WATCH GT, first-generation Bluetooth model `WA2456C`
+- OS: BlueOS 3.0
+- Verified firmware baseline: `DPD2346C_A_1.54.5`
+- Watch app line: `0.1.2` through `0.1.5`
 
-| Version | Package evidence | Physical-watch result |
-|---|---|---|
-| `0.1.0` / code 1 | SHA-256 `FEE05DE3F475BC8CA021AEED38D69682C84C2EA2467648CA6A35DF3A1B0ADE0E`; compiled `appCategory=sports` | Installed through OrbitV. `READ_HEALTH_DATA` prompted and was allowed. The old aggregate Run probe displayed a real `82 bpm`, then the whole watch black-screen rebooted. The probe had already issued 19 native health requests without awaiting callbacks, so this event cannot identify one offending API. |
-| `0.1.1` / code 2 | SHA-256 `CD858F1C7A2F1D30F2B6A16B6EC3D5D4F8083E38534C904971E6F963BFD42A0C`; local OrbitV copy was byte-identical | Installed successfully. Stable at idle for at least one minute. One `Recent HR` tap produced no new visible value; the watch later black-screen rebooted. `0.1.1` initialized the queue and the BlueXlink connection at startup, so the reboot cannot be pinned to one layer. |
-| `0.1.2` / code 3 | SHA-256 `D5A368469F556A379575178ACFA57530D35546D44742433788F13ED8EE0E98C6`; 69,649 bytes | Installed successfully. Isolated results below (operator-reported, recorded 2026-08-12): the complete health chain passed, including three consecutive cold-start full-pipeline passes, with no reboot. `transport init` failed with BlueXlink `code=1001`. |
-| `0.1.3` / code 4 | SHA-256 `BFCCEA5B7181BFE20C7B547EA05E5025DC7DE76703A98A60D75BF95D1328E0A1`; 75,466 bytes | Installed through OrbitV. `net probe` and `send batch https` both passed on 2026-08-12; the first real watch batch traversed relay → drain → local service → MCP the same day. Details below. |
-| `0.1.4` / code 5 | SHA-256 `AF16F9E39CEBB67AB79408B03668907CD40BBBFB6F6705599A9C8808FC63372B`; 84,899 bytes | Verified 2026-08-12 (operator-run, afternoon/evening UTC+8). All three collect+sync buttons passed end-to-end; real nonzero HR (62 bpm live, 61 bpm resting), SpO2 (99 %), stress (35) landed in the VPS store and are queryable via the remote MCP. Zero-shape → NO_DATA mapping confirmed on device. Daily SUM statistics identified as a device capability boundary (all returned empty). Details below. |
-| `0.1.5` / code 6 | SHA-256 `C8AFBE32446E30D745CBCFE68C8C7D5DA101B7B58DD78CCD52167C2D7343AE76`; 89,461 bytes | Verified 2026-08-12 (operator-run, evening UTC+8). Sentinel rule confirmed on device, SUM-stats conclusively empty-object, sleep boundaries established, NOT_APPLICABLE layer semantics live. Details below. |
+### Phone
 
-## `0.1.2` isolated results (operator-reported, recorded 2026-08-12)
+- vivo Android phone used as the verified phone baseline
+- Android bridge installed in place across schema migration tests
+- vivo Health / assistant provider behavior verified on the physical phone
 
-Each row started from a cold app launch with one test per process.
+Compatibility on other vivo/iQOO models or firmware remains unverified until tested.
 
-| Test | Last visible stage | Result | Alive after 60 s | Reboot observed |
-|---|---|---|---|---|
-| `queue + persist` | `QUEUE_PERSIST_PASS` | `PASS` | yes | no |
-| `hr invoke only` | `HEALTH_CALL_RETURNED` | stable invoke | yes (60 s stable) | no |
-| `hr callback only` | `CALLBACK_ENTERED_SUCCESS` | success callback really entered | yes | no |
-| `hr direct ui` | parse + direct UI | `PASS` | yes | no |
-| `hr full pipeline` | `STORAGE_SUCCESS` | `PASS` — 3 of 3 consecutive cold starts | yes | no |
-| `transport init` | `FAIL transport code=1001` | `ERROR` — `interconnectfeature error` | yes | no |
+## Watch health chain
 
-Established by these runs:
-
-- The chain `getRecentSamples([HEART_RATE])` → native callback → payload parse → UI → queue → snapshot → `storage.set` is stable on this watch across repeated cold starts. Do not re-litigate or rewrite this chain without new failing evidence.
-- `interconnect.instance({package, fingerprint})` returns an instance, and the connection then fails asynchronously with `onError code=1001, message="interconnectfeature error"` before any `onOpen`. No message was ever sent.
-- The `0.1.1` whole-watch reboots were not reproduced by any isolated `0.1.2` test. `0.1.1` differed by initializing BlueXlink at startup, which makes transport/runtime interaction a plausible-but-unproven factor; the reboot root cause remains unresolved and is no longer blocking (the `0.1.2/0.1.3` harness never initializes BlueXlink at startup).
-
-### BlueXlink verdict for `WA2456C`
-
-Combining the device result with the research recorded in [RESEARCH.md](RESEARCH.md): the official BlueXlink support table lists only vivo WATCH 3; the official watch-side error table defines `1001` as "phone APP not installed", which for this pairing also matches the phone bridge never being registered with vivo Health (no vivo `appid`/`encryStr` exists for it); and the raw message `interconnectfeature error` comes from the native watch runtime, not from any layer this project controls. Whether the terminal cause is missing device support or missing vivo credentials cannot be separated without enterprise credentials or a WATCH 3, and both fixes are outside this project's reach. BlueXlink on `WA2456C` is therefore closed as `UNSUPPORTED_OR_CREDENTIAL_BLOCKED`; the `transport init` button remains only as an evidence generator.
-
-## `0.1.3` network relay results (2026-08-12)
-
-Phone paired, connected over Bluetooth, and online. Each test from a cold app launch.
-
-| Test | Date/time | Observed stages | Result | Reboot |
-|---|---|---|---|---|
-| `net probe` | 2026-08-12 13:50 local | `CONTROL_HTTP_204` FAIL `code=0 message=generic error` after ~40 s → `RELAY_HTTPS_RESPONSE_200` (~4 s) → `RELAY_HTTP_RESPONSE_200` (~8 s) → `PASS net probe` | `PASS` — the sideloaded quick app reaches the internet through the paired phone, and the relay answers over both HTTPS and HTTP | no |
-| `send batch https` | 2026-08-12 13:53 local | relay received batch `wa2456c-batch-1786510408808-3` (producer `akari-pulse-blueos-watch`, 2 events) 3 s after the watch `sent_at`; the relay stored it and returned the full acknowledgement | `PASS` on the server-verified leg | no |
-
-Facts established:
-
-- `@blueos.network.fetch` from a sideloaded quick app has internet access via the paired phone. HTTPS to `pulse.yoru-and-akari.dev` works, including TLS, with ~4 s first-connection latency. **The transport gate is open.**
-- The third-party plain-HTTP `generate_204` control failed with `code=0 "generic error"` after ~40 seconds despite `timeout: 10000` — the fetch `timeout` parameter is not honored on this firmware. Plan retry/UI expectations around ≥40 s worst-case fetch failure latency, and do not use that miui endpoint as a control in future builds.
-- The uploaded batch carried a **real earlier heart-rate event** from the durable diagnostic queue (`hr full pipeline` era) plus the send-control marker: queued history leaves the watch automatically on the first successful sync, as designed.
-- Same day, `node scripts/drain-relay.mjs` drained that batch into the local service (`accepted=2 duplicates=0`), the relay row was deleted (`pending_batches=0`), and the record was returned end-to-end by the real stdio MCP (`health_latest`, 14 tools listed). The complete pipeline **watch → relay → drain → Akari Health → MCP** has now run once with physical-watch data.
-
-Data-quality caveat recorded from the drained batch: the carried heart-rate event has `value: 0, sample_timestamp: 0` with `status: PASS`. Those zeros are the device's own raw callback content when no recent sample exists — they were preserved, not invented. Treat `heart_rate` value `0` (especially with `sample_timestamp` `0`) as "no valid sample" in analysis. This is the exact code path fixed in `0.1.4`: `watch/src/lib/hr-diagnostics.js#parseRecentHeartRate` (and the equivalent parse in `0.1.4` `collect hr live` / `collect recents`) now uses `events.js#isZeroHrSampleShape` to detect that shape and produce `NO_DATA` with `raw_error_code: ZERO_SHAPE`.
-
-Watch-side display of `ACK_VALID` and the emptied queue counter were not photographed; the relay-side receipt, acknowledgement response, and subsequent successful drain are server-verified. On the next launch, the `saved diagnostic queue` card should show the queue empty — record it then.
-
-## `0.1.4` collect-and-sync results (operator-run, 2026-08-12 afternoon/evening UTC+8)
-
-Same discipline as prior versions: cold app launch before each row, one test per process. Phone paired, connected over Bluetooth, and online.
-
-| Test | Observed stages | Result | Store effect |
-|---|---|---|---|
-| `collect hr live` (first attempt) | Cold launch, watch worn. HR live subscription ran 60 s: >5 nonzero callbacks (`HR_CALLBACK_PASS_1..5` then repeated `HR_CALLBACK_CAPPED` at ~1-2 s intervals; server data shows `callback_delta_ms` 998, i.e. ~1 Hz). Layer diags enqueued: `watch_module_api` PASS, `permission` PASS, `sample_acquisition` PASS ("5 nonzero, 0 zero-shape"). HTTPS sync then FAILED instantly (same-second): `SEND_FAIL code=-6 message="generic error"`. | **SEND_FAIL** — see network-path attribution below | Queue kept all 8 events durably; frozen pending batch preserved for idempotent retry. This is the designed store-then-forward behavior. |
-| `send batch https` (retry of first attempt) | Operator turned PC Bluetooth OFF, confirmed phone paired and online, cold-launched, pressed `send batch https`. `BEGIN_HTTPS_POST` → `ACK_VALID` in 3 s. The retry re-sent the SAME frozen batch (`batch_id` `wa2456c-batch-1786521945414-12`, created ~11.5 min earlier during the failed attempt). Server: accepted=8 duplicates=0, `received_at` 1786522638291. | **PASS** | 5 `heart_rate` PASS events in VPS store: latest value 62 bpm, unit bpm, timestamp 1786521891324 (epoch ms, watch clock), `sample_timestamp` 1786521891, `source_api` `health.subscribeSample`, quality `live_sample_collect`, `callback_delta_ms` 998. `health_status` layers `watch_module_api` / `permission` / `sample_acquisition` all turned PASS. Store record_count 3 → 11. |
-| `collect recents` | Cold launch. All four recent-sample metrics returned: `heart_rate` ZERO SHAPE (value 0 + timeStamp 0) → recorded as NO_DATA per the `0.1.4` contract (first on-device demonstration of zero-shape → NO_DATA mapping); `heart_rate_resting` PASS 61 bpm (`sample_timestamp` 1786520700, epoch seconds — see [DIAGNOSTICS.md](DIAGNOSTICS.md) device quirks); `spo2` PASS 99 % (`sample_timestamp` 1786513540, an older stored sample); `stress` PASS 35 (unitless index, `sample_timestamp` 1786522798). `sample_acquisition` evidence: "3 PASS of 4". ACK_VALID ~5 s. Batch `wa2456c-batch-1786522798397-23` accepted=9 (4 metric events + 3 layer diags + `watch_transport` PASS receipt from the previous ACK + send-batch marker). | **PASS** | Store 11 → 20. `watch_transport` layer turned PASS in the store (receipt timestamp 1786522505977) — confirming the ride-next-sync receipt design. |
-| `collect recents` relaunch guard | Operator pressed the next button in the same process 12 s after the first test completed. | **FAIL relaunch required** — the one-test-per-cold-start lock working; no data effect. | No change. |
-| `collect stats` (run 1) | Cold launch. `heart_rate_today_max` PASS 178 bpm; `heart_rate_today_min` PASS 0 bpm (see [DIAGNOSTICS.md](DIAGNOSTICS.md) device quirks). `step_count`, `distance`, `calories`, `standing`, `intensity_sport` (all SUM statistics): ALL NO_DATA — the device returned empty results despite the operator having walked that day while wearing the watch. | **PASS** (transport); per-metric results honestly reflect device behavior | Store 20 → 31 (7 metric events + 3 layer diags + `watch_transport` PASS receipt). |
-| `collect stats` (run 2, independent cold launch) | Identical per-metric results as run 1; harmless duplication of observations, both recorded honestly. | **PASS** | Store 31 → 42. |
-
-### Network-path attribution (controlled experiment, 2026-08-12 evening)
-
-During the first `collect hr live` run, the watch's only active Bluetooth link was the operator's Windows PC (used for OrbitV sideloading). The HTTPS sync failed instantly: `SEND_FAIL code=-6 message="generic error"` (same-second rejection — contrast with the known ~40 s `code=0` timeout shape when a network path exists but stalls). The PC Bluetooth link provides no internet proxy.
-
-Attribution step: operator turned the PC's Bluetooth OFF entirely, confirmed the vivo Health app on the paired phone showed the watch connected and the phone was online, cold-launched, pressed `send batch https`. Result: `BEGIN_HTTPS_POST` → `ACK_VALID` in 3 s. The frozen batch from the failed attempt was accepted.
-
-Verdict: the sideloaded quick app's internet path runs through the **paired phone** (vivo Health Bluetooth proxy), confirmed with the PC link eliminated as a single-variable controlled experiment. The earlier `0.1.3` `net probe` conclusion stands. OrbitV on the PC is the install channel only.
-
-### `watch_transport` layer visibility
-
-After the first successful collect ACK (the `send batch https` retry), a `diagnostic_watch_transport` PASS event was enqueued carrying the acknowledged `batch_id`. That event rode the next sync (`collect recents`). `watch_transport` turned PASS in the store after the second sync, confirming the ride-next-sync receipt design.
-
-### `heart_rate` zero-shape mapping
-
-The `collect recents` heart-rate result returned exactly `value: 0, sample_timestamp: 0` and was enqueued as `heart_rate` NO_DATA with `raw_error_code: ZERO_SHAPE` — the first on-device demonstration of the `0.1.4` zero-shape → NO_DATA contract. No new zero-BPM PASS records appeared in the store from `0.1.4`.
-
-### Daily SUM statistics capability boundary
-
-`getTodayStatistic` HEART_RATE MAX/MIN returned real values on `WA2456C / DPD2346C_A_1.54.5`. Every SUM statistic type (`STEP_COUNT`, `DISTANCE`, `CALORIES`, `STANDING`, `INTENSITY_SPORT`) returned empty to the sideloaded quick app despite the operator demonstrably having walked that day while wearing the watch. Root cause not yet investigated; candidate next step: log the raw success-callback payload shape to check whether SUM results arrive in a different field. Boundary recorded and noted for `0.1.5`.
-
-### Final layer state (2026-08-12 end of session)
-
-| Layer | Status | Evidence |
-|---|---|---|
-| `watch_module_api` | PASS | health module present, subscribe/getRecentSamples/getTodayStatistic all invoked successfully |
-| `permission` | PASS | `READ_HEALTH_DATA` granted, no code 400 received |
-| `sample_acquisition` | PASS | 5 nonzero live HR callbacks, 3 of 4 recent-sample metrics returned real values |
-| `watch_transport` | PASS | receipt timestamp 1786522505977 |
-| `backend_ingest` | PASS | relay accepted all batches |
-| `database` | PASS | VPS store record_count 42 (31 PASS, 11 NO_DATA) |
-| `mcp_query` | PASS | verified earlier same day via ChatGPT through the remote MCP connector |
-| `phone_receive` | NO_DATA | Android-bridge-only layer, N/A on relay route |
-| `phone_persistence` | NO_DATA | Android-bridge-only layer, N/A on relay route |
-| `uplink` | NO_DATA | Android-bridge-only layer, N/A on relay route |
-
-### Acceptance
-
-All seven goals of the 2026-08-12 evening round met:
-
-1. Real nonzero HR with real timestamps end-to-end into the store and queryable via `health_latest`.
-2. Layer diagnostics reflect real execution, not stubs.
-3. Three non-HR metrics verified (resting HR 61 bpm, SpO2 99 %, stress 35).
-4. Zero-shape → NO_DATA mapping confirmed on device.
-5. `watch_transport` ride-next-sync receipt design confirmed.
-6. Store-then-forward durable queue behavior confirmed (frozen batch survived ~11.5 min and retried successfully).
-7. Daily SUM statistics identified as a device capability boundary with evidence.
-
-## `0.1.5` acceptance results (operator-run, 2026-08-12 evening UTC+8)
-
-Same discipline as prior versions: cold app launch before each row, one test per process. Phone paired, connected over Bluetooth, and online. Build sideloaded via OrbitV (versionCode 6, SHA-256 `C8AFBE32446E30D745CBCFE68C8C7D5DA101B7B58DD78CCD52167C2D7343AE76`, 89,461 bytes).
-
-| Test | Observed stages | Result | Store effect |
-|---|---|---|---|
-| `collect hr live` | Fresh nonzero HR collected and synced; `health.subscribeSample`, quality `live_sample_collect`. | **PASS** | heart_rate n=11 in store, latest value 83 bpm. Independent of the prior 62 bpm run. Repeat-collection after app reinstall confirms the pipeline is not session-bound. |
-| `collect recents` | Resting HR PASS 61 bpm, SpO2 PASS 99 %, stress PASS 43. heart_rate recent = zero shape → NO_DATA (rule holding). First attempt SEND_FAIL with the KNOWN `code=-6` instant-fail signature (PC BT active for OrbitV sideload, phone proxy absent — identical to the documented 2026-08-12 afternoon incident). Recovery: PC BT off, vivo Health connected, cold start → ACK_VALID ~1 s. Frozen batch replayed idempotently, zero data loss. | **PASS** (after documented recovery) | Metrics landed. The code=-6 incident is now twice-observed with identical cause and recovery. |
-| `collect stats` (run 1) | On-screen raw payload photographed. SUM types (STEP_COUNT / DISTANCE / CALORIES / STANDING / INTENSITY_SPORT): success callback delivered a LITERAL EMPTY OBJECT `raw={}` for every SUM type. CONCLUSIVE: the "wrong field read" hypothesis is dead — there are no fields at all. `getTodayStatistic` SUM types genuinely return nothing to a sideloaded quick app on this firmware. Events recorded NO_DATA with `raw_error_code: EMPTY_STAT_RESULT` and `raw={}` preserved. HEART_RATE MAX: PASS `raw={"value":178,"statisticType":2,"startTime":1786464000,"endTime":1786539544}` — full shape, `startTime` = today's local midnight in epoch seconds (more evidence for the seconds quirk). HEART_RATE MIN: `raw={"value":0,"statisticType":3,...}` → correctly recorded NO_DATA with `raw_error_code: ZERO_SENTINEL` (first on-device confirmation of the 0.1.5 sentinel rule). ACK_VALID ~3 s. | **PASS** (transport); per-metric results honestly reflect device behavior | 7 metric + 3 layer diags + transport receipt. |
-| `probe sleep` | On-screen raw payload photographed. SLEEP_STATUS via `getRecentSamples`: PASS `raw=[{"dataType":13,"data":{"timeStamp":1786539849,"value":0}}]` — an instantaneous awake/asleep state (value 0 = awake, operator awake at the time; `timeStamp` = current moment in epoch seconds). Not historical sleep. SLEEP_UNIT and SLEEP_STAGES via `getRecentSamples`: both hard-fail `code=200 message "getRecentSamples failed"` — the device refuses these data types outright. Both recorded as ERROR events with raw code preserved (the store's only 2 ERROR records — intentional evidence). `health.getStatistic` (the ranged statistic API listed in SDK `featureApi.js`): ABSENT at runtime — `typeof` check found no function, ranged call skipped cleanly. No path to last-night sleep aggregates for a sideloaded app. | **PASS** (probe completed; evidence recorded) | sleep_status 1 PASS; 2 ERROR records (sleep-refusal evidence). |
-| `collect stats` (run 2) | Identical shape to run 1 (batch accepted=11: 7 metric + 3 layer diags + transport receipt). Full app restart between runs. | **PASS** | Confirms deterministic repeat behavior. |
-
-### SUM statistics: conclusive verdict
-
-The 0.1.5 raw-payload dump answered the outstanding question from 0.1.4. The `getTodayStatistic` success callback for every SUM type (`STEP_COUNT`, `DISTANCE`, `CALORIES`, `STANDING`, `INTENSITY_SPORT`) delivers a literal empty object `{}` with no fields whatsoever — not a different field name, not unexplored nesting, not a permission issue. This is a device/firmware capability boundary for sideloaded quick apps on `WA2456C / DPD2346C_A_1.54.5`. HEART_RATE MAX/MIN continue to work via the same API with a full result shape.
-
-### ZERO_SENTINEL rule: first on-device confirmation
-
-`heart_rate_today_min` with `raw={"value":0,...}` was correctly mapped to NO_DATA with `raw_error_code: ZERO_SENTINEL` by the 0.1.5 watch code. This is the first real-device confirmation that the sentinel rule works as designed. The 0 bpm MIN value (which was a legal PASS in 0.1.4) is now correctly classified.
-
-### Sleep capability verdict for WA2456C
-
-Sleep data access for sideloaded quick apps on this device:
-
-| Data type | API | Result | Verdict |
-|---|---|---|---|
-| SLEEP_STATUS (=13) | `getRecentSamples` | PASS — instantaneous awake/asleep state (`value: 0` = awake) | Available; instantaneous only, not historical |
-| SLEEP_UNIT (=11) | `getRecentSamples` | ERROR `code=200 "getRecentSamples failed"` | Device refuses; unavailable |
-| SLEEP_STAGES (=12) | `getRecentSamples` | ERROR `code=200 "getRecentSamples failed"` | Device refuses; unavailable |
-| Sleep aggregates | `health.getStatistic` | Function absent at runtime | No API path exists |
-
-`health_sleep` returning NO_DATA for historical windows is the device's truth. The [RESEARCH.md](RESEARCH.md) prediction for this device class (SLEEP_UNIT/SLEEP_STAGES unsupported) is now device-proven.
-
-### code=-6 incident: twice-observed pattern
-
-The `collect recents` first attempt failed at sync with the same `code=-6` instant-fail signature observed during the 0.1.4 session. Root cause identical: the operator had re-enabled PC Bluetooth to sideload 0.1.5 through OrbitV, leaving the watch without its phone internet proxy. Recovery followed the same procedure (PC BT off, vivo Health connected, cold start, send batch HTTPS → ACK_VALID ~1 s). The frozen batch replayed idempotently with zero data loss. This is now a twice-observed, twice-recovered pattern with a known cause and a documented one-step fix.
-
-### Server-side 0.1.5 semantics verified
-
-Verified live on the VPS after deploying `server/src/database.js` (backup `database.js.bak-pre015` kept on the VPS):
-
-- `/v1/status` layers: `phone_receive` / `phone_persistence` / `uplink` now report `NOT_APPLICABLE` with note `"android bridge fallback; not on the active relay route"` (zero-record condition). All four watch layers PASS. `backend_ingest` / `database` PASS.
-- `heart_rate_today_min` under PASS filter: 0 records (historical PASS-0 records excluded by the bpm zero-validity query rule). Under `status=ALL` the raw records remain visible; the latest record is the new NO_DATA ZERO_SENTINEL one.
-- Regression check: `heart_rate` latest still returns real values (62 → now 83 bpm).
-
-### Final store state (2026-08-12 end of 0.1.5 session)
-
-94 records: 67 PASS, 25 NO_DATA, 2 ERROR (the two sleep-refusal evidence records).
-
-Metric coverage: heart_rate 11, heart_rate_resting 3, spo2 3, stress 3, heart_rate_today_max 4, heart_rate_today_min 2 (old PASS-0s) + new NO_DATA sentinels, sleep_status 1, layer diagnostics ~10 per watch layer, watch_transport receipts 7.
-
-### Final layer state (2026-08-12 end of 0.1.5 session)
-
-| Layer | Status | Evidence |
-|---|---|---|
-| `watch_module_api` | PASS | health module present, subscribe/getRecentSamples/getTodayStatistic all invoked successfully |
-| `permission` | PASS | `READ_HEALTH_DATA` granted, no code 400 received |
-| `sample_acquisition` | PASS | live HR collected, 3 of 4 recent-sample metrics real values, HEART_RATE MAX real, sentinel and evidence rules confirmed |
-| `watch_transport` | PASS | multiple ACK_VALID receipts |
-| `backend_ingest` | PASS | relay accepted all batches |
-| `database` | PASS | VPS store record_count 94 (67 PASS, 25 NO_DATA, 2 ERROR) |
-| `mcp_query` | PASS | operator's ChatGPT-side MCP query returned the fresh live heart rate (83 bpm) on 2026-08-12 evening — end-consumer visibility of the 0.1.5 state confirmed |
-| `phone_receive` | NOT_APPLICABLE | android bridge fallback; not on the active relay route |
-| `phone_persistence` | NOT_APPLICABLE | android bridge fallback; not on the active relay route |
-| `uplink` | NOT_APPLICABLE | android bridge fallback; not on the active relay route |
-
-### Acceptance
-
-0.1.5 acceptance goals met:
-
-1. Sentinel rule (`ZERO_SENTINEL`) confirmed on device — `heart_rate_today_min` value 0 correctly mapped to NO_DATA.
-2. SUM statistics conclusively established as a device capability boundary — literal empty object `{}`, no fields.
-3. Sleep boundaries established — instantaneous SLEEP_STATUS only; SLEEP_UNIT, SLEEP_STAGES, and `health.getStatistic` all unavailable.
-4. Raw-payload evidence preserved in every stat and sleep event for inspection.
-5. `NOT_APPLICABLE` layer semantics live on the server for bridge-only layers.
-6. Per-metric `sample_acquisition` breakdown working.
-7. Pipeline regression-free — live HR, recents, and stats all still pass.
-8. code=-6 incident pattern twice-observed with identical cause and documented recovery.
-
-## Still unverified on this watch
-
-- Long-run repeated-sync stability, screen-off/background behavior, payload-size limits, and battery cost.
-- Multi-day queue retention while offline.
-- The historical zero-bpm PASS record from `0.1.2` remains in the store (append-only) — 0.1.5 query validity rule now excludes it from PASS reads without mutation.
-- The exact `0.1.0`/`0.1.1` reboot class and offending component (historical; not currently blocking).
-- Watch-to-Android fallback receive/uplink remains unverified. The independent phone-local daily-summary path is verified below.
-
-## 2026-08-14 — Android vivo phone-local today activity reader
-
-The engineering reader was built into `dev.akari.pulse.bridge`, installed with `adb install -r`, and cold-started through the debug read intent. Android granted `com.vivo.assistant.StepProvider`; the bridge process started and emitted this real nonzero provider result under log tag `AkariPhoneHealth`:
+The physical watch verified the following path end to end:
 
 ```text
-status=PASS
-outcome=PROVIDER_CALL_SUCCEEDED
-source=vivo_assistant_step_provider
-day=2026-08-14
-timezone=Asia/Shanghai
-steps=5
-distance_m=3.0
-calories_kcal=5.105000019073486
-sample_epoch_ms=1786641196532
-capability_bundle_keys=[can_step]
-provider_bundle_keys=[calorie,distance,step]
-raw_can_step=1
-raw_ret_code=null
-ret_code_available=false
-settings_realtime_steps_raw=5
-settings_used_as_fallback=false
-request_ignore=true
-call_duration_ms=7
-source_timestamp_available=false
+BlueOS health callback
+  -> watch parser
+  -> immutable queued event
+  -> HTTPS relay transport
+  -> durable relay buffer
+  -> Akari Health service
+  -> SQLite
+  -> MCP query
 ```
 
-A vivo Health UI capture at `2026-08-14T01:13:15+0800` showed `5 / 7,000步`; the final reader sample at `2026-08-14T01:13:16.532+08:00` returned `steps=5`, for an exact nonzero match. The finalized APK was 30,931,114 bytes with SHA-256 `6B4D9C04A2C7B13C9022B2527D224C475FE8DD19E93873FBCA81D06F5E123FC1`; the installed `base.apk` produced the same digest. Its cold launch reported `Status: ok`, `LaunchState: COLD`, and the Akari activity became top-resumed. An earlier engineered zero sample also matched the same-minute vivo Health main card and healthwidget at zero, while the prior independent nonzero control remains `vivo Health UI 5722 == provider 5722`.
+### Confirmed PASS capabilities
 
-Steps are `VERIFIED` by exact zero and nonzero UI controls. Distance and calories are classified `VERIFIED_FORMATTED_DISPLAY`: the prior nonzero sample mapped provider `4319.39` to UI `4.31 km` and provider `263.81702` to UI `263 kcal`; this verifies their unit/display correspondence but not source-timestamp freshness. Settings remained a secondary observation and was not used to manufacture success.
+- live heart-rate collection through the BlueOS health callback;
+- recent resting-heart-rate observation when the firmware exposes one;
+- recent SpO2 observation when available;
+- recent stress observation when available;
+- watch-side health/permission/sample-acquisition diagnostics;
+- durable queued retries across a transport failure;
+- relay acknowledgement validation before dequeuing;
+- backend ingest and MCP visibility of the same physical-watch record.
 
-That first reader-only phase did not persist or upload the result. The follow-up below adds persistence and uplink without converting the phone summary into a watch event or changing the watch route.
+Real nonzero values were observed and compared across device/UI/backend/MCP during verification. Their numeric values are deliberately redacted from this public report.
 
-### Phone daily-summary persistence and uplink follow-up
+### Zero and missing-data semantics
 
-The same debug package was upgraded in place on the vivo phone after a stopped-app backup of its version-1 Room database. `firstInstallTime` was preserved, the production database opened at `user_version=2`, and the existing watch tables retained their row counts. A real-device `AndroidJUnitRunner` test then passed the explicit Room 1 -> 2 migration: it inserted an old watch event under schema 1, migrated to schema 2, proved that event remained, and proved the new phone current-row key is `(source, metric, source_day)`.
+A callback shape representing no physiological sample is normalized to `NO_DATA`, not to a successful numeric zero when zero is not physiologically valid for that metric.
 
-Three later provider reads on 2026-08-14 produced three distinct immutable upload batches. The first two returned the same 2210-step summary; a third read observed real movement and replaced the source-day current rows with:
+This distinction was verified on the physical device and remains part of the contract. A later valid nonzero observation does not retroactively change an earlier `NO_DATA` record.
 
-```text
-source=vivo_phone
-source_day=2026-08-14
-source_timezone=Asia/Shanghai
-sampled_at=2026-08-14T11:07:58.491+08:00
-source_timestamp_available=false
-status=PASS
-outcome=PROVIDER_CALL_SUCCEEDED
-phone_step_count=2212 count
-phone_distance=1683.91015625 m
-phone_calories=98.35599517822266 kcal
-```
+## Watch daily activity boundary
 
-The first post-read Room snapshot contained exactly three current rows and two immutable three-summary outbox rows. Both snapshotted outboxes completed on their first attempt with no stored error, and all three current rows had a non-null `synced_at_ms`. The later third read traversed the same transactional persistence/uplink path and arrived as a third distinct production batch. Its 2212-step current row replaced the earlier 2210-step observation for the same source/day; the cumulative values were not added together. The changing-value `5 -> 100 -> 3200` replacement case is also covered by the server integration suite.
+On the verified `WA2456C` firmware, BlueOS daily SUM statistic calls for step count, distance, calories, standing, and sport intensity returned successful callbacks with an empty result object.
 
-The phone uses a separate Cloudflare Worker secret and `/v1/health/daily-summaries` route. An unauthenticated request returned `401 UNAUTHORIZED`; the correct phone credential with an intentionally invalid body passed authentication and returned `400 INVALID_REQUEST`. The existing watch route and watch ingest secret were left intact. D1 returned to zero pending rows after each phone batch drained.
+The public conclusion is therefore:
 
-The production SQLite store recorded all three immutable phone batch IDs with `summary_count=3`, `accepted_count=3`, `duplicate_count=0`, and `stale_count=0`. Its current `daily_summaries` table contains only the latest three phone rows above. The existing watch store remained at 105 records.
+- watch-side live/recent vital data: available for the verified metrics;
+- watch-side daily activity totals through this sideloaded quick-app API: `NO_DATA` / capability boundary;
+- do not fabricate daily totals from unrelated sensor counters.
 
-The production Streamable HTTP MCP was then exercised with the official SDK client, not a direct database shortcut. It negotiated protocol `2026-07-28`, listed 14 tools, and returned:
+Phone daily summaries are kept as a separate source rather than being used to overwrite the watch source.
 
-- `health_status`: `PASS`, 105 watch records, 3 phone daily-summary current rows, `backend_ingest=PASS`, and `mcp_query=PASS`;
-- `health_today(date=2026-08-14, timezone_offset_minutes=480)`: the three `vivo_phone` summaries selected by `source_day`, with the original `Asia/Shanghai` timezone and `source_timestamp_available=false` preserved;
-- `health_steps(date=2026-08-14)`: phone 2212 and watch `NO_DATA` side by side, with the explicit text `sources are returned side by side; no merge or precedence`;
-- `health_latest(metric=heart_rate)`: the old watch path still returned `PASS`, 83 bpm from `WA2456C`.
+## Watch sleep boundary
 
-The watch step branch is honestly `NO_DATA`, not overwritten by the phone. All five historical `step_count` watch records were already `NO_DATA / today_sum_collect_empty`; the phone `PASS` did not convert them to watch values. This establishes separate source visibility while preserving both the established watch event model and the phone's cumulative natural-day summary model.
+On the verified watch firmware:
+
+- instantaneous sleep status could be observed;
+- sleep unit/stage recent-sample calls failed on device;
+- the ranged statistic API expected from SDK metadata was not available at runtime.
+
+Therefore the watch quick-app path does **not** claim last-night duration or sleep-stage history.
+
+Any phone-local sleep integration must be represented as its own source and verified independently.
+
+## Watch transport verification
+
+### HTTPS over paired-phone connectivity
+
+The sideloaded watch app successfully reached an operator-owned HTTPS relay through the paired phone's network proxy. TLS and application-level acknowledgement were both observed on the physical watch.
+
+### Retry behavior
+
+A controlled transport failure left the frozen batch queued. After connectivity was restored, the same immutable batch was resent and accepted without data loss.
+
+This is the required behavior: a transport callback alone is not success; the watch dequeues only after a matching business acknowledgement.
+
+## Official BlueXlink / device RPC verdict
+
+The official BlueXlink/device-RPC candidate was exercised on the verified watch and failed at runtime with the documented `code=1001 interconnectfeature error` condition.
+
+Combined with the public compatibility evidence recorded in [RESEARCH.md](RESEARCH.md), the route is classified as:
+
+`UNSUPPORTED_OR_CREDENTIAL_BLOCKED`
+
+The repository keeps the diagnostic path buildable, but production does not depend on it.
+
+## Vivo phone daily activity
+
+A phone-local provider path was verified for three natural-day cumulative metrics:
+
+- `phone_step_count` (`count`)
+- `phone_distance` (`m`)
+- `phone_calories` (`kcal`)
+
+Canonical source:
+
+`vivo_phone`
+
+Provider-derived source metadata is preserved:
+
+- `source_day`
+- `source_timezone`
+- observation-only `sampled_at`
+- `source_timestamp_available=false` when the provider does not expose the event timestamp
+- `PASS`, `NO_DATA`, and `ERROR` remain distinct
+- a legitimate numeric zero remains `PASS`
+
+### UI verification
+
+Multiple physical-phone reads were compared with the vivo Health / assistant UI. Nonzero daily values matched the UI at verification time. The public repository records the match, not the operator's exact values.
+
+No Settings value or stale cache was used to manufacture success.
+
+## Android Room and immutable outbox
+
+Room schema v2 was verified on a physical phone with an in-place migration.
+
+The migration preserved existing watch records and added:
+
+- current phone daily-summary rows keyed by `(source, metric, source_day)`;
+- immutable phone daily-summary upload batches.
+
+Each real phone read performs one transaction that updates the current rows and creates an immutable outbox payload.
+
+For the same source/day, later cumulative observations replace the current value; they are not added together. Synthetic integration tests cover increasing cumulative values to verify replacement semantics.
+
+## Relay and backend
+
+The phone daily-summary route is separate from the watch-event route and uses a separate ingest credential.
+
+Verified behavior includes:
+
+- missing credential -> `401`;
+- valid credential + invalid body -> contract validation error after authentication;
+- replay handling;
+- stale observation handling;
+- conflicting same-timestamp payload -> conflict response;
+- durable relay buffering before acknowledgement;
+- successful drain to the production backend;
+- current phone rows stored independently of immutable historical batches.
+
+The existing watch records were preserved while the phone route was introduced.
+
+## MCP verification
+
+A real MCP client, using the project's Streamable HTTP transport, verified that production queries can expose phone and watch sources side by side.
+
+Confirmed behavior:
+
+- `health_status` reports backend/database/MCP layers explicitly;
+- `health_today` returns phone daily summaries with their original source day/timezone semantics;
+- `health_steps` can return a phone `PASS` next to a watch `NO_DATA` without merging or precedence;
+- `health_latest(metric=heart_rate)` continues to return the verified watch source after phone daily-summary support is enabled.
+
+No MCP tool rewrites a phone value as a watch value.
+
+## Deployment verification
+
+The production-style deployment has been exercised with:
+
+- Akari Health service;
+- SQLite persistence;
+- Streamable HTTP MCP;
+- Cloudflare Tunnel / operator-owned endpoint;
+- relay drain timer;
+- separate watch and phone ingest credentials.
+
+Public examples use `*.example.com`; private deployment hostnames and secrets are not part of the repository contract.
+
+## What this evidence does not prove
+
+These results do not prove compatibility with:
+
+- another vivo/iQOO phone model;
+- another WATCH GT firmware;
+- another BlueOS device family;
+- a future OriginOS/Android permission implementation;
+- Health Kit developer registration;
+- private-provider access on a phone that has not been tested.
+
+A host build, emulator run, successful `/healthz`, or transport callback must never be promoted to a device capability `PASS` without physical-device evidence.
+
+## Public evidence policy
+
+Future updates to this document should preserve enough information to reproduce the capability result while keeping personal health data private. See [../PRIVACY.md](../PRIVACY.md) and [../CONTRIBUTING.md](../CONTRIBUTING.md).

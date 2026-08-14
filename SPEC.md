@@ -2,7 +2,7 @@
 
 ## Value proposition
 
-Akari Pulse gives Yoru one private, inspectable path from a vivo WATCH GT to conversational health queries. The operator is the owner of a `WA2456C` watch and a vivo X200 Pro; today the data is trapped behind BlueOS and the vivo Health ecosystem, and there is no trustworthy interface for ChatGPT or Claude to query it.
+Akari Pulse gives an operator a private, inspectable path from owned vivo devices to conversational health queries. The verified baseline includes a `WA2456C` watch and a vivo Android phone, but the product contract is source- and capability-driven rather than tied to one person's devices.
 
 The focused actions are:
 
@@ -33,9 +33,9 @@ A client posts a timestamped generic event. A later session summary reports base
 ## Product context
 
 - **Watch:** vivo WATCH GT first-generation Bluetooth model `WA2456C`, BlueOS 3.0, software `DPD2346C_A_1.54.5`, hardware `MP_0.1`.
-- **Phone:** private sideloaded Android companion targeting vivo X200 Pro.
+- **Phone:** private sideloaded Android companion; compatibility is verified per model/firmware and is never inferred from the vivo brand alone.
 - **Service:** local Node.js service with SQLite persistence, bindable to a Windows/Tailscale interface.
-- **MCP:** independent local stdio server using the current official MCP TypeScript SDK; it calls the HTTP service and does not modify the existing Akari Surface Desktop MCP.
+- **MCP:** independent local stdio / Streamable HTTP server using the MCP TypeScript SDK; it calls the HTTP service rather than opening the database directly.
 - **Authentication:** an optional bearer token is mandatory whenever the service is bound beyond loopback. Secrets are supplied through environment variables and are not committed.
 - **Transport:** the watch-to-phone adapter follows the strongest currently available BlueOS path. The event envelope and acknowledgement semantics do not depend on whether the adapter is official RPC/BlueXlink or the proven BlueOS network-request path.
 - **Raw-data policy:** raw health records are append-only from the service/MCP perspective. Duplicate event IDs are acknowledged idempotently. Failed uplinks remain queued on the originating device.
@@ -92,6 +92,6 @@ Every tool returns a stable envelope containing `ok`, `status`, `generated_at`, 
 ## Acceptance boundaries
 
 - A built `.rpk` proves only buildability; BlueOS health support remains unverified until exercised on the named watch baseline.
-- A built `.apk` proves only installability; watch reception, background behavior, and OEM battery-policy behavior remain unverified until exercised on the vivo X200 Pro.
+- A built `.apk` proves only installability; provider access, watch reception, background behavior, and OEM battery-policy behavior remain unverified until exercised on the target phone.
 - Service and MCP acceptance require real process startup, SQLite writes, HTTP query responses, MCP tool listing, and MCP tool invocation.
 - Tests never insert implicit demo data into the production database. Test fixtures use isolated temporary databases and are explicitly labeled fixtures.

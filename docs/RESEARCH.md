@@ -23,7 +23,7 @@
 - [官方 fetch 文档](https://developers-watch.vivo.com.cn/api/system/fetch/)未记载协议限制、域名白名单或代理行为；[通用错误码](https://developers-watch.vivo.com.cn/api/common/error-code/)只有 200/202/300。工具链中同样没有对 http/https 的任何校验。
 - **唯一残留真机门（已于 2026-08-12 关闭）**：侧载 quick app 的 `@blueos.network.fetch` 是否同样享有该代理通路。`0.1.3` 的 `net probe` 真机结果：relay HTTPS/HTTP 均 200（首次 TLS ~4 s）,miui generate_204 对照 `code=0 generic error` 且约 40 s 才失败（`timeout` 参数在该固件上不生效）。同日首个真机批次完成 watch → relay → drain → 本地服务 → MCP 全链路。详见 REAL_DEVICE_RESULTS.md。
 
-选定路线：`watch fetch → https://pulse.yoru-and-akari.dev (Cloudflare Worker akari-pulse-relay, D1 缓冲) → scripts/drain-relay.mjs → 本地 Akari Health /v1/health/batches（契约不变）→ 既有 MCP`。理由：完全绕开 BlueXlink、vivo 凭证、Android 后台存活三个独立故障源；watch 端 http-adapter 与批次 ACK 语义零改动复用；relay 侧 2026-08-12 已完成宿主侧全链路冒烟（ingest 202/重放 200/冲突 409/校验 400/鉴权 401/drain 后 pending=0，事件落入本地 SQLite）。Android HTTP 监听（手机 LAN）与 BLE 自定义通道降级为 `net probe` 失败后的后备，优先级见下方原有 fallback 顺序。
+选定路线：`watch fetch → https://pulse.example.com（操作者自己的 Cloudflare Worker + D1 缓冲）→ scripts/drain-relay.mjs → 本地 Akari Health /v1/health/batches（契约不变）→ MCP`。理由：完全绕开 BlueXlink、vivo 凭证、Android 后台存活三个独立故障源；watch 端 http-adapter 与批次 ACK 语义零改动复用；relay 侧 2026-08-12 已完成宿主侧全链路冒烟（ingest 202/重放 200/冲突 409/校验 400/鉴权 401/drain 后 pending=0，事件落入本地 SQLite）。Android HTTP 监听（手机 LAN）与 BLE 自定义通道降级为 `net probe` 失败后的后备，优先级见下方原有 fallback 顺序。
 
 ## 2026-08-12 evening: network-path attribution experiment (0.1.4)
 

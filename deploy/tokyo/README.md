@@ -4,11 +4,11 @@ Since 2026-08-12 the always-on store of record runs on the AWS Lightsail Tokyo b
 (`ssh your-vps`), so claude.ai / ChatGPT can query health data with the PC off:
 
 ```text
-watch → https://pulse.yoru-and-akari.dev (relay buffer, Cloudflare)
+watch → https://pulse.example.com (operator-owned relay buffer, Cloudflare)
       → your-vps systemd timer drains every 2 min
       → Akari Health service (127.0.0.1:28787, /home/ubuntu/akari-pulse/data/akari-health.sqlite)
       → MCP over Streamable HTTP (127.0.0.1:28788)
-      → Cloudflare Tunnel "your-tunnel-name" → https://pulse-mcp.yoru-and-akari.dev/mcp/<secret>
+      → Cloudflare Tunnel "your-tunnel-name" → https://pulse-mcp.example.com/mcp/<secret>
 ```
 
 **Single-drainer rule: the VPS timer is the only drain client.** Running
@@ -50,7 +50,7 @@ Add a custom connector (claude.ai: Settings → Connectors → Add custom connec
 ChatGPT: developer-mode connectors) with the remote MCP URL:
 
 ```text
-https://pulse-mcp.yoru-and-akari.dev/mcp/<AKARI_MCP_HTTP_PATH token>
+https://pulse-mcp.example.com/mcp/<AKARI_MCP_HTTP_PATH token>
 ```
 
 The full URL is the credential (TLS-protected, unguessable path; connector UIs cannot

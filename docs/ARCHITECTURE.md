@@ -14,7 +14,7 @@ vivo WATCH GT (WA2456C)                 vivo phone StepProvider
                             v   v
 akari-pulse-relay (Cloudflare Worker + D1 buffer)
   strict watch-event / phone-summary validation, insert-then-ACK
-  https://pulse.yoru-and-akari.dev
+  https://pulse.example.com
         |
         | akari-drain.timer on the Tokyo VPS, every 2 min
         | (Bearer ADMIN_TOKEN pull, delete only after acknowledgement)
@@ -33,8 +33,8 @@ Akari Health MCP
         |
         | Cloudflare Tunnel (remotely-managed connector)
         v
-https://pulse-mcp.yoru-and-akari.dev/mcp/<secret>
-  claude.ai / ChatGPT custom connectors, any official MCP client
+https://pulse-mcp.example.com/mcp/<secret>
+  Claude / ChatGPT custom connectors, any compatible MCP client
 ```
 
 The store of record moved to the Tokyo VPS on 2026-08-12 so queries work with the PC off;
@@ -43,7 +43,7 @@ drain client (single-drainer rule — see [../deploy/tokyo/README.md](../deploy/
 
 The Android bridge's BlueXlink receiver and LAN HTTP listener remain fallback/diagnostic watch layers: BlueXlink is closed as unsupported/credential-blocked on `WA2456C` (see [RESEARCH.md](RESEARCH.md) 2026-08-12), and the LAN listener matters only if the watch relay route fails the `net probe` gate. The same APK is now an active, independent producer for the vivo phone's today-activity daily summaries; that path does not pass through BlueXlink or the LAN listener.
 
-The watch and Android components are private sideloaded applications. The health service is local-first and binds to loopback by default. It may bind to one exact Tailscale address only when a bearer token is configured. The MCP is an independent process and does not modify the existing Akari Surface Desktop MCP.
+The watch and Android components are private sideloaded applications. The health service is local-first and binds to loopback by default. It may bind to one exact Tailscale address only when a bearer token is configured. The MCP is an independent process.
 
 ## Watch collection
 
@@ -57,7 +57,7 @@ The watch's local start/stop control governs its live heart-rate subscription. M
 
 ### Primary: HTTPS to the Cloudflare relay
 
-The watch HTTP adapter POSTs the unchanged batch contract to `https://pulse.yoru-and-akari.dev/v1/health/batches` with `X-Akari-Bridge-Token`. The relay validates the entire batch with the same rules as the local service, stores it in D1 before acknowledging, and answers with the exact acknowledgement shape the watch verifies: 2xx, `ok === true`, matching `batch_id`, and non-negative `accepted`/`duplicates` summing to the submitted event count. Anything else keeps the events queued on the watch.
+The watch HTTP adapter POSTs the unchanged batch contract to an operator-owned endpoint such as `https://pulse.example.com/v1/health/batches` with `X-Akari-Bridge-Token`. The relay validates the entire batch with the same rules as the local service, stores it in D1 before acknowledging, and answers with the exact acknowledgement shape the watch verifies: 2xx, `ok === true`, matching `batch_id`, and non-negative `accepted`/`duplicates` summing to the submitted event count. Anything else keeps the events queued on the watch.
 
 The relay is a buffer, not a store of record. `scripts/drain-relay.mjs` pulls pending batches with a separate admin token, re-POSTs each unchanged payload to the target path stored with its row (`/v1/health/batches` or `/v1/health/daily-summaries`), and deletes a relay row only after the local service acknowledged that exact batch. Event-level and daily-summary idempotence stay in the local service. Relay routes, semantics, and deploy steps are in [../relay/README.md](../relay/README.md).
 

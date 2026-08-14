@@ -4,9 +4,9 @@ The relay is the public HTTPS ingest point for the watch and the Android phone d
 
 ```text
 watch @blueos.network.fetch
-  -> POST https://pulse.yoru-and-akari.dev/v1/health/batches   (X-Akari-Bridge-Token)
+  -> POST https://pulse.example.com/v1/health/batches   (X-Akari-Bridge-Token)
 Android vivo today reader
-  -> POST https://pulse.yoru-and-akari.dev/v1/health/daily-summaries (separate X-Akari-Bridge-Token)
+  -> POST https://pulse.example.com/v1/health/daily-summaries (separate X-Akari-Bridge-Token)
   -> D1 relay_batches row (INSERT before ACK)
   -> scripts/drain-relay.mjs pulls /v1/relay/pending            (Bearer ADMIN_TOKEN)
   -> POST the row's recorded target_path on 127.0.0.1:8787

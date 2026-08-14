@@ -41,7 +41,7 @@ The official channel remains a real-device gate because it requires a vivo devel
 The watch network-request adapter exercises this same contract against the Cloudflare relay, which buffers batches until the local service drains them:
 
 ```text
-POST https://pulse.yoru-and-akari.dev/v1/health/batches
+POST https://pulse.example.com/v1/health/batches
 Content-Type: application/json
 X-Akari-Bridge-Token: <ingest token>
 ```
@@ -128,7 +128,7 @@ Android uses `source + metric + source_day` as the Room key. A later observation
 Production upload is:
 
 ```text
-POST https://pulse.yoru-and-akari.dev/v1/health/daily-summaries
+POST https://pulse.example.com/v1/health/daily-summaries
 X-Akari-Bridge-Token: <PHONE_INGEST_TOKEN>
 ```
 
