@@ -376,9 +376,9 @@ function validateSleepSummaryBatch(input) {
     throw new HttpError(400, "INVALID_REQUEST", "body.summaries must contain between 1 and 30 summaries");
   }
   input.summaries.forEach((summary, index) => validateSleepSummary(summary, `body.summaries[${index}]`));
-  const keys = input.summaries.map((summary) => `${summary.source} ${summary.source_day}`);
+  const keys = input.summaries.map((summary) => `${summary.source} ${summary.source_day} ${summary.sleep_start}`);
   if (new Set(keys).size !== keys.length) {
-    throw new HttpError(400, "INVALID_REQUEST", "body.summaries contains duplicate source/source_day keys");
+    throw new HttpError(400, "INVALID_REQUEST", "body.summaries contains duplicate source/source_day/sleep_start keys");
   }
   return input;
 }

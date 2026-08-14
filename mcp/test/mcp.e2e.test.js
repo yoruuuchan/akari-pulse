@@ -267,6 +267,41 @@ test("MCP answers phone sleep and phone vitals beside the watch, with explicit s
     }],
   });
 
+  // A nap read later the same day is a second session and must not displace the night row.
+  const napStart = Date.parse("2026-01-02T15:20:00+08:00");
+  const napEnd = Date.parse("2026-01-02T16:03:00+08:00");
+  await post("/v1/health/sleep-summaries", {
+    batch_id: "mcp-nap-fixture",
+    producer: "akari-pulse-android-fixture",
+    summaries: [{
+      source: "vivo_phone",
+      source_day: "2026-01-02",
+      source_timezone: "Asia/Shanghai",
+      source_day_start: Date.parse("2026-01-02T00:00:00+08:00"),
+      sleep_start: napStart,
+      sleep_end: napEnd,
+      sampled_at: "2026-01-02T16:30:00+08:00",
+      status: "PASS",
+      outcome: "PROVIDER_CALL_SUCCEEDED",
+      verification: "VERIFIED",
+      recorder_generation: 2,
+      low_accuracy: false,
+      score: 0,
+      deep_sleep_continuity: 0,
+      total_duration_ms: 2_580_000,
+      night_sleep_duration_ms: 0,
+      nap_duration_ms: 2_580_000,
+      chart_total_duration_ms: 2_580_000,
+      light_sleep_duration_ms: 0,
+      deep_sleep_duration_ms: 0,
+      rem_sleep_duration_ms: 0,
+      awake_duration_ms: 0,
+      awake_episode_count: 0,
+      awake_episode_duration_ms: 0,
+      stages: { light: [], deep: [], rem: [], awake: [] },
+    }],
+  });
+
   await post("/v1/health/batches", {
     batch_id: "mcp-vivo-vitals-fixture",
     producer: "akari-pulse-android-fixture",
@@ -317,7 +352,9 @@ test("MCP answers phone sleep and phone vitals beside the watch, with explicit s
 
     const sleep = await client.callTool({ name: "health_sleep", arguments: {} });
     assert.equal(sleep.structuredContent.status, "PASS");
-    const night = sleep.structuredContent.data.phone_sleep.summaries[0];
+    const daySummaries = sleep.structuredContent.data.phone_sleep.summaries;
+    assert.equal(daySummaries.length, 2);
+    const night = daySummaries[0];
     assert.equal(night.source, "vivo_phone");
     assert.equal(night.source_day, "2026-01-02");
     assert.equal(night.sleep_start, sleepStart);
@@ -330,6 +367,12 @@ test("MCP answers phone sleep and phone vitals beside the watch, with explicit s
     assert.equal(night.awake_episode_duration_ms, 1_200_000);
     assert.equal(night.score, 64);
     assert.equal(night.deep_sleep_continuity, 90);
+    const nap = daySummaries[1];
+    assert.equal(nap.sleep_start, napStart);
+    assert.equal(nap.total_duration_ms, 2_580_000);
+    assert.equal(nap.nap_duration_ms, 2_580_000);
+    assert.match(sleep.content[0].text, /2026-01-02 night/);
+    assert.match(sleep.content[0].text, /2026-01-02 nap/);
     assert.match(sleep.content[0].text, /sources are returned side by side; no merge or precedence/);
 
     const datedSleep = await client.callTool({
@@ -366,7 +409,8 @@ test("MCP answers phone sleep and phone vitals beside the watch, with explicit s
     );
 
     const status = await client.callTool({ name: "health_status", arguments: {} });
-    assert.equal(status.structuredContent.data.database.sleep_summary_count, 1);
+    // Counts session rows: the fixture day stores its night sleep and its nap.
+    assert.equal(status.structuredContent.data.database.sleep_summary_count, 2);
     assert.equal(status.structuredContent.data.database.sleep_summary_latest_day, "2026-01-02");
     assert.equal(status.structuredContent.data.layers.vivo_private_health.status, "NO_DATA");
   } finally {

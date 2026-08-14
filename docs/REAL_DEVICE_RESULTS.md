@@ -137,7 +137,7 @@ Two private providers were read:
 
 | Provider | Content | Akari source |
 |---|---|---|
-| `content://com.vivo.health.provider/sleep` | one row per sleep day | `vivo_phone` |
+| `content://com.vivo.health.provider/sleep` | latest sleep record only (one session) | `vivo_phone` |
 | `content://com.vivo.health.provider.care/healthCare` | `MYSELF_DATA` HealthDetailBean JSON | `vivo_phone` |
 
 ### Sleep
@@ -247,6 +247,8 @@ A third route, `/v1/health/sleep-summaries`, was added for the vivo private slee
 - the backend stored **one row per `source_day`**: repeated reads of the same night arrived as separate immutable batches and each was accepted as a newer observation of the same day, leaving a single current row rather than duplicates.
 
 The backend schema advanced 2 → 3 through an explicit versioned migration. Existing watch records and phone daily summaries were preserved across it.
+
+2026-08-14 addendum: per-`source_day` keying proved lossy on a real nap day — the provider exposes only its latest record, so an afternoon nap read displaced the stored night sleep. Sleep rows are now keyed per session (`source`, `source_day`, `sleep_start`; backend schema 4, Room 4), the night sleep and naps kept side by side, newer-wins per session.
 
 ## MCP verification
 

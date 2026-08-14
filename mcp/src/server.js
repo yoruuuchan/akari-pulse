@@ -96,10 +96,20 @@ function formatDuration(milliseconds) {
   return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m`;
 }
 
-function summarizePhoneSleep(summary) {
-  if (!summary) return "phone: no vivo sleep day stored";
+// Session kind is read from the provider's own duration split, never inferred
+// from clock times. A record carrying both kinds (or neither) stays unlabelled.
+function sleepSessionKind(summary) {
+  const night = summary.night_sleep_duration_ms ?? 0;
+  const nap = summary.nap_duration_ms ?? 0;
+  if (night > 0 && nap === 0) return "night";
+  if (nap > 0 && night === 0) return "nap";
+  return null;
+}
+
+function summarizePhoneSleepSession(summary) {
+  const kind = sleepSessionKind(summary);
   const parts = [
-    `phone (${summary.source}) ${summary.source_day}`,
+    `phone (${summary.source}) ${summary.source_day}${kind ? ` ${kind}` : ""}`,
     `asleep ${new Date(summary.sleep_start).toISOString()} → awake ${new Date(summary.sleep_end).toISOString()}`,
     `total ${formatDuration(summary.total_duration_ms)}`,
   ];
@@ -112,6 +122,17 @@ function summarizePhoneSleep(summary) {
   if (summary.score !== null) parts.push(`score ${summary.score}`);
   if (summary.deep_sleep_continuity !== null) parts.push(`deep continuity ${summary.deep_sleep_continuity}`);
   return parts.join(" · ");
+}
+
+// Summarizes every stored session of the most recent returned day — the night
+// sleep and any naps are separate rows and all of them belong in the answer.
+function summarizePhoneSleep(summaries) {
+  if (!summaries || summaries.length === 0) return "phone: no vivo sleep day stored";
+  const day = summaries[0].source_day;
+  return summaries
+    .filter((summary) => summary.source_day === day)
+    .map(summarizePhoneSleepSession)
+    .join(" | ");
 }
 
 function summarizeSideBySide(payload, watchMetric, phoneMetric) {
@@ -360,7 +381,7 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
     {
       title: "Sleep observations",
       description:
-        "Read sleep from both sources side by side: raw watch sleep observations in a bounded time range, and vivo phone sleep days (fell asleep, woke up, total, deep, light, REM, wake-ups, score, deep-sleep continuity). A phone sleep day is attributed to the local calendar day of its wake-up time. No stage or duration is inferred when a source does not report it.",
+        "Read sleep from both sources side by side: raw watch sleep observations in a bounded time range, and vivo phone sleep sessions (fell asleep, woke up, total, deep, light, REM, wake-ups, score, deep-sleep continuity). A phone sleep day is attributed to the local calendar day of its wake-up time and can hold several sessions: the night sleep and any naps are separate rows keyed by their sleep_start, never merged and never displacing each other. No stage or duration is inferred when a source does not report it.",
       inputSchema: z.object({
         from: timeInput.optional(),
         to: timeInput.optional(),
@@ -405,7 +426,7 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
           payload,
           [
             `watch: ${payload.data.records.length} sleep observations${statuses.length > 0 ? ` (${statuses.join(", ")})` : ""}`,
-            summarizePhoneSleep(phone.data.summaries[0]),
+            summarizePhoneSleep(phone.data.summaries),
             "sources are returned side by side; no merge or precedence",
           ].join(" · "),
         );

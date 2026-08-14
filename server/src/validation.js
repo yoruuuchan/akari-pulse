@@ -495,9 +495,9 @@ export function parseSleepSummaryBatch(input) {
   const summaries = value.summaries.map((summary, index) =>
     parseSleepSummary(summary, `body.summaries[${index}]`),
   );
-  const keys = summaries.map((summary) => `${summary.source} ${summary.source_day}`);
+  const keys = summaries.map((summary) => `${summary.source} ${summary.source_day} ${summary.sleep_start}`);
   if (new Set(keys).size !== keys.length) {
-    throw new HttpError(400, "INVALID_REQUEST", "body.summaries contains duplicate source/source_day keys");
+    throw new HttpError(400, "INVALID_REQUEST", "body.summaries contains duplicate source/source_day/sleep_start keys");
   }
   return {
     batch_id: expectString(value.batch_id, "body.batch_id", { max: 128 }),

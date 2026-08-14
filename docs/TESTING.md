@@ -142,7 +142,7 @@ adb install -r .\app\build\outputs\apk\androidTest\debug\app-debug-androidTest.a
 adb shell "am instrument -w -r dev.akari.pulse.bridge.test/androidx.test.runner.AndroidJUnitRunner"
 ```
 
-Result: `OK (2 tests)` — the existing v1 → v2 test plus a new v2 → v3 test asserting that existing rows survive and that one sleep row is kept per `source_day`. Rebuild the androidTest APK with `:app:assembleDebugAndroidTest` before running; `:app:compileDebugAndroidTestKotlin` alone leaves a stale APK on disk and will silently run the old test set.
+Result: `OK (2 tests)` — the existing v1 → v2 test plus a new v2 → v3 test asserting that existing rows survive and that one sleep row is kept per `source_day`. A v3 → v4 test has since joined them (not yet run on hardware): it rekeys sleep rows per session and asserts a nap row lands beside the migrated night row instead of over it. Rebuild the androidTest APK with `:app:assembleDebugAndroidTest` before running; `:app:compileDebugAndroidTestKotlin` alone leaves a stale APK on disk and will silently run the old test set.
 
 Before writing any acceptance result, confirm the phone is running the APK you just built:
 

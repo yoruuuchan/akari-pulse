@@ -25,7 +25,7 @@ akari-pulse-relay (Cloudflare Worker + D1 buffer)
 Akari Health service  (Tokyo VPS, 127.0.0.1:28787, systemd)
   append-only health records
   idempotently updated phone daily summaries keyed by source day
-  one sleep summary row per phone source day
+  one sleep summary row per phone sleep session (night sleep and naps side by side)
   sessions + correlation events
   SQLite
         |
@@ -108,7 +108,7 @@ A second phone-local boundary reads two private vivo providers under `source=viv
 
 | Provider | Shape | Akari contract |
 |---|---|---|
-| `content://com.vivo.health.provider/sleep` | one row per sleep day, 38 columns on the verified ROM | its own sleep-summary contract |
+| `content://com.vivo.health.provider/sleep` | only the latest sleep record (a nap read replaces the night sleep in the cursor), 38 columns on the verified ROM | its own sleep-summary contract, one row per session so sessions accumulate downstream |
 | `content://com.vivo.health.provider.care/healthCare` | `MYSELF_DATA` HealthDetailBean JSON | three timestamped observations in the existing health-event outbox |
 
 Both providers sit behind `com.vivo.health.widget.permission`, which is declared `signature|privileged`. A third-party build never receives it at install time; it is granted once by the device owner over ADB through `scripts/bootstrap-vivo-private-health.ps1`. This is deliberately an owner bootstrap and not a distributable capability — vivo's Health Kit remains the ADB-free third-party route.
@@ -149,7 +149,7 @@ The stdio MCP calls the authenticated service rather than opening SQLite. It exp
 
 `health_steps` returns watch `step_count`, watch `step_count_sensor`, and phone `phone_step_count` side by side. It does not merge sources or state a phone/watch preference; the sensor record remains explicitly labeled as cumulative-since-boot rather than a calendar-day total. Sleep, SpO2, and stress tools include non-`PASS` diagnostic records so `DENIED`, `UNSUPPORTED`, and `API_MISSING` are not hidden as empty data.
 
-`health_sleep` answers last night from the phone's sleep summary — onset, wake, total, deep, light, REM, wake-ups, score, deep-sleep continuity — beside the watch's sleep observations, and says so explicitly when no phone sleep day is stored rather than reaching for an adjacent day. `health_heart_rate`, `health_spo2`, and `health_stress` return the watch metric and its `phone_` counterpart together, each labelled with its own source device and source time. When a tool returns the phone vital next to a windowed watch query, it also returns the machine-readable note that the phone value is a single latest snapshot rather than a windowed sample or a daily aggregate.
+`health_sleep` answers last night from the phone's stored sleep sessions — the night sleep and any naps side by side, each with onset, wake, total, deep, light, REM, wake-ups, score, deep-sleep continuity — beside the watch's sleep observations, and says so explicitly when no phone sleep day is stored rather than reaching for an adjacent day. `health_heart_rate`, `health_spo2`, and `health_stress` return the watch metric and its `phone_` counterpart together, each labelled with its own source device and source time. When a tool returns the phone vital next to a windowed watch query, it also returns the machine-readable note that the phone value is a single latest snapshot rather than a windowed sample or a daily aggregate.
 
 No tool merges the two sources or assigns precedence between them.
 

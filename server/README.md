@@ -46,8 +46,8 @@ Use Node.js 24 or newer. On the currently verified Node 24.14 runtime, SQLite wo
 | `GET` | `/v1/status` | database, ingest, freshness, and layer diagnostics |
 | `POST` | `/v1/health/batches` | idempotent batch ingest, 1–500 events |
 | `POST` | `/v1/health/daily-summaries` | idempotent phone daily-summary ingest, 1–50 summaries |
-| `POST` | `/v1/health/sleep-summaries` | idempotent phone sleep-summary ingest, one row per source day |
-| `GET` | `/v1/health/sleep-summaries` | stored phone sleep days, newest first, optionally filtered by `source_day` |
+| `POST` | `/v1/health/sleep-summaries` | idempotent phone sleep-summary ingest, one row per sleep session (`source`, `source_day`, `sleep_start`) |
+| `GET` | `/v1/health/sleep-summaries` | stored phone sleep sessions grouped by day, newest day first (`limit` counts days), optionally filtered by `source_day` |
 | `GET` | `/v1/health/latest` | latest observation per metric |
 | `GET` | `/v1/health/range` | bounded raw query |
 | `GET` | `/v1/health/today` | local-day summary with explicit UTC offset |

@@ -86,7 +86,7 @@ function sleepBatch({ batchId, sourceDay = DAY, sampledAt, score = 64, overrides
   };
 }
 
-test("a sleep day is keyed by source_day, replaced only by a newer read, and never merged", async () => {
+test("a sleep session is keyed by source_day and sleep_start, replaced only by a newer read of the same session", async () => {
   await withService(async ({ request }) => {
     const first = await request("/v1/health/sleep-summaries", {
       method: "POST",
@@ -133,6 +133,59 @@ test("a sleep day is keyed by source_day, replaced only by a newer read, and nev
     const missingDay = await request("/v1/health/sleep-summaries?source_day=2026-01-03");
     assert.equal(missingDay.body.status, "NO_DATA");
     assert.equal(missingDay.body.data.summaries.length, 0);
+  });
+});
+
+test("a nap read after the night sleep is stored beside it, never over it", async () => {
+  await withService(async ({ request }) => {
+    await request("/v1/health/sleep-summaries", {
+      method: "POST",
+      body: JSON.stringify(sleepBatch({ batchId: "night-1", sampledAt: "2026-01-02T09:30:00+08:00", score: 61 })),
+    });
+
+    // The provider now returns only the afternoon nap; its read is newer than the
+    // night sleep's, which previously made it overwrite the night row.
+    const napStart = Date.parse("2026-01-02T15:20:00+08:00");
+    const napEnd = Date.parse("2026-01-02T16:03:00+08:00");
+    const nap = await request("/v1/health/sleep-summaries", {
+      method: "POST",
+      body: JSON.stringify(sleepBatch({
+        batchId: "nap-1",
+        sampledAt: "2026-01-02T16:30:00+08:00",
+        overrides: {
+          sleep_start: napStart,
+          sleep_end: napEnd,
+          score: 0,
+          deep_sleep_continuity: 0,
+          total_duration_ms: 2_580_000,
+          night_sleep_duration_ms: 0,
+          nap_duration_ms: 2_580_000,
+          chart_total_duration_ms: 2_580_000,
+          light_sleep_duration_ms: 0,
+          deep_sleep_duration_ms: 0,
+          rem_sleep_duration_ms: 0,
+          awake_duration_ms: 0,
+          awake_episode_count: 0,
+          awake_episode_duration_ms: 0,
+          stages: { light: [], deep: [], rem: [], awake: [] },
+        },
+      })),
+    });
+    assert.equal(nap.body.data.accepted, 1);
+
+    const read = await request(`/v1/health/sleep-summaries?source_day=${DAY}&limit=1`);
+    assert.equal(read.body.data.summaries.length, 2);
+    const [night, napRow] = read.body.data.summaries;
+    assert.equal(night.sleep_start, SLEEP_START);
+    assert.equal(night.total_duration_ms, 26_400_000);
+    assert.equal(night.night_sleep_duration_ms, 26_400_000);
+    assert.equal(napRow.sleep_start, napStart);
+    assert.equal(napRow.total_duration_ms, 2_580_000);
+    assert.equal(napRow.nap_duration_ms, 2_580_000);
+
+    // A single day still counts as one sleep day for the day-limited listing.
+    const listed = await request("/v1/health/sleep-summaries?limit=7");
+    assert.equal(listed.body.data.summaries.length, 2);
   });
 });
 
@@ -290,9 +343,83 @@ test("a version 2 database gains the sleep tables in place, keeping its existing
 
     const migrated = new HealthDatabase(databasePath);
     try {
-      assert.equal(migrated.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value, "3");
+      assert.equal(migrated.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value, "4");
       assert.equal(migrated.queryRange({ metrics: ["heart_rate"] })[0].value, 71);
       assert.deepEqual(migrated.sleepSummaries({}), []);
+    } finally {
+      migrated.close();
+    }
+  } finally {
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("a version 3 database is rekeyed by sleep session, keeping the stored night row", () => {
+  const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "akari-sleep-rekey-test-"));
+  const databasePath = path.join(temporaryDirectory, "health.sqlite");
+  try {
+    new HealthDatabase(databasePath).close();
+
+    // Rebuild the sleep table in its version 3 shape — keyed by (source, source_day) —
+    // with one stored night row, as the VPS database looked before the rekey.
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      DROP TABLE sleep_summaries;
+      CREATE TABLE sleep_summaries (
+        source TEXT NOT NULL,
+        source_day TEXT NOT NULL,
+        source_timezone TEXT NOT NULL,
+        source_day_start_ms INTEGER,
+        sleep_start_ms INTEGER NOT NULL,
+        sleep_end_ms INTEGER NOT NULL,
+        sampled_at TEXT NOT NULL,
+        sampled_at_ms INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status = 'PASS'),
+        outcome TEXT NOT NULL,
+        verification TEXT NOT NULL,
+        recorder_generation INTEGER,
+        low_accuracy INTEGER,
+        score INTEGER,
+        deep_sleep_continuity INTEGER,
+        total_duration_ms INTEGER NOT NULL,
+        night_sleep_duration_ms INTEGER,
+        nap_duration_ms INTEGER,
+        chart_total_duration_ms INTEGER,
+        light_sleep_duration_ms INTEGER,
+        deep_sleep_duration_ms INTEGER,
+        rem_sleep_duration_ms INTEGER,
+        awake_duration_ms INTEGER,
+        awake_episode_count INTEGER,
+        awake_episode_duration_ms INTEGER,
+        stages_json TEXT NOT NULL,
+        received_at_ms INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        PRIMARY KEY (source, source_day)
+      ) STRICT;
+      INSERT INTO sleep_summaries VALUES (
+        'vivo_phone', '${DAY}', 'Asia/Shanghai', ${DAY_START},
+        ${SLEEP_START}, ${SLEEP_END}, '2026-01-02T09:30:00+08:00', ${Date.parse("2026-01-02T09:30:00+08:00")},
+        'PASS', 'PROVIDER_CALL_SUCCEEDED', 'VERIFIED', 2, 0,
+        61, 90, 26400000, 26400000, 0, 28800000,
+        17400000, 3600000, 5400000, 2400000, 2, 1200000,
+        '{}', ${Date.parse("2026-01-02T09:31:00+08:00")}, '{}'
+      );
+      UPDATE schema_meta SET value = '3' WHERE key = 'schema_version';
+    `);
+    legacy.close();
+
+    const migrated = new HealthDatabase(databasePath);
+    try {
+      assert.equal(migrated.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value, "4");
+      const night = migrated.sleepSummaries({ sourceDay: DAY });
+      assert.equal(night.length, 1);
+      assert.equal(night[0].sleep_start, SLEEP_START);
+
+      const pk = migrated.db
+        .prepare("SELECT name FROM pragma_table_info('sleep_summaries') WHERE pk > 0 ORDER BY pk")
+        .all()
+        .map((row) => row.name);
+      assert.deepEqual(pk, ["source", "source_day", "sleep_start_ms"]);
     } finally {
       migrated.close();
     }

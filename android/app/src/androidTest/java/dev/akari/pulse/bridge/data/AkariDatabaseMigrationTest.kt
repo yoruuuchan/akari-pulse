@@ -189,8 +189,77 @@ class AkariDatabaseMigrationTest {
         }
     }
 
+    @Test
+    fun migrationThreeToFourKeepsTheNightRowWhenANapArrives() {
+        helper.createDatabase(SESSION_TEST_DATABASE, 3).apply {
+            execSQL(
+                """
+                INSERT INTO sleep_summaries (
+                    source, source_day, source_timezone, source_day_start_ms,
+                    sleep_start_ms, sleep_end_ms, sampled_at_ms, sampled_at,
+                    status, outcome, verification, recorder_generation, low_accuracy,
+                    score, deep_sleep_continuity, total_duration_ms,
+                    night_sleep_duration_ms, nap_duration_ms, chart_total_duration_ms,
+                    light_sleep_duration_ms, deep_sleep_duration_ms, rem_sleep_duration_ms,
+                    awake_duration_ms, awake_episode_count, awake_episode_duration_ms,
+                    stages_json, synced_at_ms
+                ) VALUES ('vivo_phone', '2026-01-02', 'Asia/Shanghai', 1767283200000,
+                          1767310000000, 1767338800000, 1767355200000, '2026-01-02T20:00:00+08:00',
+                          'PASS', 'PROVIDER_CALL_SUCCEEDED', 'VERIFIED', 2, 0,
+                          64, 90, 26400000, 26400000, 0, 28800000,
+                          17400000, 3600000, 5400000, 2400000, 2, 1200000,
+                          '{}', 1767355300000)
+                """.trimIndent(),
+            )
+            close()
+        }
+
+        helper.runMigrationsAndValidate(
+            SESSION_TEST_DATABASE,
+            4,
+            true,
+            AkariDatabase.MIGRATION_3_4,
+        ).apply {
+            // A nap of the same source_day upserts beside the migrated night row.
+            execSQL(
+                """
+                INSERT OR REPLACE INTO sleep_summaries (
+                    source, source_day, source_timezone, source_day_start_ms,
+                    sleep_start_ms, sleep_end_ms, sampled_at_ms, sampled_at,
+                    status, outcome, verification, recorder_generation, low_accuracy,
+                    score, deep_sleep_continuity, total_duration_ms,
+                    night_sleep_duration_ms, nap_duration_ms, chart_total_duration_ms,
+                    light_sleep_duration_ms, deep_sleep_duration_ms, rem_sleep_duration_ms,
+                    awake_duration_ms, awake_episode_count, awake_episode_duration_ms,
+                    stages_json, synced_at_ms
+                ) VALUES ('vivo_phone', '2026-01-02', 'Asia/Shanghai', 1767283200000,
+                          1767362400000, 1767364980000, 1767366000000, '2026-01-02T23:00:00+08:00',
+                          'PASS', 'PROVIDER_CALL_SUCCEEDED', 'VERIFIED', 2, 0,
+                          0, 0, 2580000, 0, 2580000, 2580000,
+                          0, 0, 0, 0, 0, 0,
+                          '{}', NULL)
+                """.trimIndent(),
+            )
+
+            query(
+                "SELECT COUNT(*) FROM sleep_summaries WHERE source = 'vivo_phone' AND source_day = '2026-01-02'",
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals(2, cursor.getInt(0))
+            }
+            query(
+                "SELECT synced_at_ms FROM sleep_summaries WHERE sleep_start_ms = 1767310000000",
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals(1_767_355_300_000, cursor.getLong(0))
+            }
+            close()
+        }
+    }
+
     companion object {
         private const val TEST_DATABASE = "akari-migration-test"
         private const val SLEEP_TEST_DATABASE = "akari-migration-test-sleep"
+        private const val SESSION_TEST_DATABASE = "akari-migration-test-sleep-session"
     }
 }

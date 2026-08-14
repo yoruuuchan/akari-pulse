@@ -313,7 +313,7 @@ export class HealthDatabase {
       .prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'")
       .get();
     const version = Number(versionRow?.value);
-    if (!Number.isInteger(version) || version < 1 || version > 3) {
+    if (!Number.isInteger(version) || version < 1 || version > 4) {
       throw new Error(`Unsupported Akari Health schema version: ${versionRow?.value ?? "missing"}`);
     }
     if (version < 2) {
@@ -433,6 +433,63 @@ export class HealthDatabase {
         throw error;
       }
     }
+    if (version < 4) {
+      // The vivo provider exposes only its latest sleep record, so a nap read after
+      // the night sleep is a second session of the same source_day, not a newer
+      // version of it. Rekey sleep rows by (source, source_day, sleep_start_ms) so
+      // sessions coexist; newer-wins applies per session.
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        this.db.exec(`
+          CREATE TABLE sleep_summaries_v4 (
+            source TEXT NOT NULL,
+            source_day TEXT NOT NULL,
+            source_timezone TEXT NOT NULL,
+            source_day_start_ms INTEGER,
+            sleep_start_ms INTEGER NOT NULL,
+            sleep_end_ms INTEGER NOT NULL,
+            sampled_at TEXT NOT NULL,
+            sampled_at_ms INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK (status = 'PASS'),
+            outcome TEXT NOT NULL,
+            verification TEXT NOT NULL,
+            recorder_generation INTEGER,
+            low_accuracy INTEGER,
+            score INTEGER,
+            deep_sleep_continuity INTEGER,
+            total_duration_ms INTEGER NOT NULL,
+            night_sleep_duration_ms INTEGER,
+            nap_duration_ms INTEGER,
+            chart_total_duration_ms INTEGER,
+            light_sleep_duration_ms INTEGER,
+            deep_sleep_duration_ms INTEGER,
+            rem_sleep_duration_ms INTEGER,
+            awake_duration_ms INTEGER,
+            awake_episode_count INTEGER,
+            awake_episode_duration_ms INTEGER,
+            stages_json TEXT NOT NULL,
+            received_at_ms INTEGER NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (source, source_day, sleep_start_ms)
+          ) STRICT;
+
+          INSERT INTO sleep_summaries_v4 SELECT * FROM sleep_summaries;
+          DROP TABLE sleep_summaries;
+          ALTER TABLE sleep_summaries_v4 RENAME TO sleep_summaries;
+
+          CREATE INDEX sleep_summaries_day
+            ON sleep_summaries(source_day DESC, source);
+          CREATE INDEX sleep_summaries_sampled
+            ON sleep_summaries(sampled_at_ms DESC);
+
+          UPDATE schema_meta SET value = '4' WHERE key = 'schema_version';
+        `);
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      }
+    }
   }
 
   #prepare() {
@@ -501,7 +558,7 @@ export class HealthDatabase {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.getSleepSummary = this.db.prepare(
-      "SELECT * FROM sleep_summaries WHERE source = ? AND source_day = ?",
+      "SELECT * FROM sleep_summaries WHERE source = ? AND source_day = ? AND sleep_start_ms = ?",
     );
     this.upsertSleepSummary = this.db.prepare(`
       INSERT INTO sleep_summaries (
@@ -513,10 +570,9 @@ export class HealthDatabase {
         rem_sleep_duration_ms, awake_duration_ms, awake_episode_count,
         awake_episode_duration_ms, stages_json, received_at_ms, payload_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(source, source_day) DO UPDATE SET
+      ON CONFLICT(source, source_day, sleep_start_ms) DO UPDATE SET
         source_timezone = excluded.source_timezone,
         source_day_start_ms = excluded.source_day_start_ms,
-        sleep_start_ms = excluded.sleep_start_ms,
         sleep_end_ms = excluded.sleep_end_ms,
         sampled_at = excluded.sampled_at,
         sampled_at_ms = excluded.sampled_at_ms,
@@ -802,7 +858,7 @@ export class HealthDatabase {
     try {
       for (const summary of batch.summaries) {
         const serializedPayload = JSON.stringify(sleepSummaryPayload(summary));
-        const prior = this.getSleepSummary.get(summary.source, summary.source_day);
+        const prior = this.getSleepSummary.get(summary.source, summary.source_day, summary.sleep_start);
         if (prior && summary.sampled_at_ms < prior.sampled_at_ms) {
           stale += 1;
           continue;
@@ -812,8 +868,8 @@ export class HealthDatabase {
             throw new HttpError(
               409,
               "SLEEP_SUMMARY_VERSION_CONFLICT",
-              "the same source/source_day and sampled_at was used for different content",
-              { source: summary.source, source_day: summary.source_day },
+              "the same source/source_day/sleep_start and sampled_at was used for different content",
+              { source: summary.source, source_day: summary.source_day, sleep_start: summary.sleep_start },
             );
           }
           duplicates += 1;
@@ -880,23 +936,28 @@ export class HealthDatabase {
   }
 
   sleepSummaries({ sourceDay = null, limit = 7 } = {}) {
-    const clauses = [];
-    const parameters = [];
-    if (sourceDay) {
-      clauses.push("source_day = ?");
-      parameters.push(sourceDay);
-    }
-    parameters.push(limit);
-    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
-    return this.db
-      .prepare(`
-        SELECT * FROM sleep_summaries
-        ${where}
-        ORDER BY source_day DESC, source ASC
-        LIMIT ?
-      `)
-      .all(...parameters)
-      .map(toSleepSummary);
+    // limit counts distinct sleep days, not rows: a returned day carries every
+    // session it has (the night sleep and any naps), in sleep_start order.
+    const rows = sourceDay
+      ? this.db
+          .prepare(`
+            SELECT * FROM sleep_summaries
+            WHERE source_day = ?
+            ORDER BY source ASC, sleep_start_ms ASC
+          `)
+          .all(sourceDay)
+      : this.db
+          .prepare(`
+            SELECT * FROM sleep_summaries
+            WHERE source_day IN (
+              SELECT DISTINCT source_day FROM sleep_summaries
+              ORDER BY source_day DESC
+              LIMIT ?
+            )
+            ORDER BY source_day DESC, source ASC, sleep_start_ms ASC
+          `)
+          .all(limit);
+    return rows.map(toSleepSummary);
   }
 
   dailySummaries({ sourceDay, metrics = [] }) {

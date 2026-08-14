@@ -17,7 +17,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SleepSummaryEntity::class,
         SleepSummaryUploadEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class AkariDatabase : RoomDatabase() {
@@ -31,7 +31,7 @@ abstract class AkariDatabase : RoomDatabase() {
                 "akari-pulse.db",
             )
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -163,6 +163,59 @@ abstract class AkariDatabase : RoomDatabase() {
                 )
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_sleep_summary_uploads_created_at_ms` ON `sleep_summary_uploads` (`created_at_ms`)",
+                )
+            }
+        }
+
+        // Rekeys sleep rows by (source, source_day, sleep_start_ms). The vivo provider
+        // exposes only its latest sleep record, so a nap read after the night sleep is a
+        // second session of the same source_day and must not replace it. Existing rows
+        // are carried over unchanged; SQLite cannot alter a primary key in place, so the
+        // table is rebuilt.
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `sleep_summaries_v4` (
+                        `source` TEXT NOT NULL,
+                        `source_day` TEXT NOT NULL,
+                        `source_timezone` TEXT NOT NULL,
+                        `source_day_start_ms` INTEGER,
+                        `sleep_start_ms` INTEGER NOT NULL,
+                        `sleep_end_ms` INTEGER NOT NULL,
+                        `sampled_at_ms` INTEGER NOT NULL,
+                        `sampled_at` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `outcome` TEXT NOT NULL,
+                        `verification` TEXT NOT NULL,
+                        `recorder_generation` INTEGER,
+                        `low_accuracy` INTEGER,
+                        `score` INTEGER,
+                        `deep_sleep_continuity` INTEGER,
+                        `total_duration_ms` INTEGER NOT NULL,
+                        `night_sleep_duration_ms` INTEGER,
+                        `nap_duration_ms` INTEGER,
+                        `chart_total_duration_ms` INTEGER,
+                        `light_sleep_duration_ms` INTEGER,
+                        `deep_sleep_duration_ms` INTEGER,
+                        `rem_sleep_duration_ms` INTEGER,
+                        `awake_duration_ms` INTEGER,
+                        `awake_episode_count` INTEGER,
+                        `awake_episode_duration_ms` INTEGER,
+                        `stages_json` TEXT NOT NULL,
+                        `synced_at_ms` INTEGER,
+                        PRIMARY KEY(`source`, `source_day`, `sleep_start_ms`)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL("INSERT INTO `sleep_summaries_v4` SELECT * FROM `sleep_summaries`")
+                db.execSQL("DROP TABLE `sleep_summaries`")
+                db.execSQL("ALTER TABLE `sleep_summaries_v4` RENAME TO `sleep_summaries`")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_sleep_summaries_sampled_at_ms` ON `sleep_summaries` (`sampled_at_ms`)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_sleep_summaries_synced_at_ms` ON `sleep_summaries` (`synced_at_ms`)",
                 )
             }
         }

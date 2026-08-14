@@ -171,7 +171,10 @@ data class PhoneDailySummaryUploadEntity(
 
 @Entity(
     tableName = "sleep_summaries",
-    primaryKeys = ["source", "source_day"],
+    // One row per sleep session: the vivo provider exposes only its latest record,
+    // so a nap read after the night sleep is a second row of the same source_day,
+    // not a replacement for it.
+    primaryKeys = ["source", "source_day", "sleep_start_ms"],
     indices = [
         Index(value = ["sampled_at_ms"]),
         Index(value = ["synced_at_ms"]),

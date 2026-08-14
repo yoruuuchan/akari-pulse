@@ -30,7 +30,7 @@ interface HealthDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertSleepSummaryUpload(batch: SleepSummaryUploadEntity)
 
-    @Query("SELECT * FROM sleep_summaries ORDER BY source_day DESC LIMIT 1")
+    @Query("SELECT * FROM sleep_summaries ORDER BY source_day DESC, sleep_start_ms DESC LIMIT 1")
     fun observeLatestSleepSummary(): Flow<SleepSummaryEntity?>
 
     @Query("SELECT * FROM watch_batches WHERE batch_id = :batchId")

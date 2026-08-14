@@ -276,7 +276,7 @@ test("schema version 1 migrates in place without losing watch records", () => {
 
     const migrated = new HealthDatabase(databasePath);
     try {
-      assert.equal(migrated.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value, "3");
+      assert.equal(migrated.db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get().value, "4");
       assert.equal(migrated.queryRange({ metrics: ["heart_rate"] })[0].value, 72);
       assert.equal(migrated.db.prepare("SELECT COUNT(*) AS count FROM daily_summaries").get().count, 0);
       assert.equal(migrated.db.prepare("SELECT COUNT(*) AS count FROM sleep_summaries").get().count, 0);

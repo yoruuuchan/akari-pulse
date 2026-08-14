@@ -96,7 +96,7 @@ The same transaction inserts an immutable outbox batch containing the exact `sou
 A second, independent phone reader covers last night's sleep and the newest heart-rate / SpO2 / stress observations:
 
 ```text
-content://com.vivo.health.provider/sleep            one row per sleep day
+content://com.vivo.health.provider/sleep            latest sleep record only (one session)
 content://com.vivo.health.provider.care/healthCare  MYSELF_DATA HealthDetailBean JSON
 ```
 
@@ -242,7 +242,7 @@ Room uses write-ahead logging and no destructive migration fallback. It stores:
 - stable Android watch upload batch ID, `sent_at`, event assignment, attempts, and terminal error text;
 - current phone daily summaries keyed by `source + metric + source_day`, including timezone, observation time, explicit status/outcome, and nullable sync time;
 - immutable phone daily-summary outbox JSON so a retry never changes the content behind a `batch_id`;
-- current phone sleep summaries keyed by `source + source_day`, including interval boundaries, durations, wake-up counts, score, and per-stage interval lists;
+- current phone sleep summaries keyed by `source + source_day + sleep_start` (one row per session, so a nap never displaces the night sleep), including interval boundaries, durations, wake-up counts, score, and per-stage interval lists;
 - immutable phone sleep-summary outbox JSON under the same retry guarantee.
 
 The worker drains watch/vitals event batches first, then phone daily-summary batches, then phone sleep-summary batches, without changing any contract. Events require `accepted + duplicates == event_count`; both summary kinds require `accepted + duplicates + stale == summary_count`. A completed older phone outbox batch marks the current row synced only if its `sampled_at` still matches, so it cannot mark a newer local read complete. Network failures, HTTP 408/425/429, and 5xx responses are retryable. Contract conflicts and other permanent failures remain visible and do not delete queued data.

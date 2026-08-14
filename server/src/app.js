@@ -290,7 +290,7 @@ export function createHealthService(config, { now = () => Date.now() } = {}) {
             summaries,
             query: { source_day: sourceDay, limit },
             semantics:
-              "one row per source_day; source_day is the local calendar day the wake-up time falls in, taken from the vivo provider and never re-bucketed",
+              "one row per observed sleep session, keyed by source, source_day, sleep_start: a day holds its night sleep and any naps side by side; source_day is the local calendar day the wake-up time falls in, taken from the vivo provider and never re-bucketed; limit counts distinct sleep days",
           },
         });
         return;
