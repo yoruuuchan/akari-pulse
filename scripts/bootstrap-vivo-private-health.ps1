@@ -128,19 +128,25 @@ if ($dump.ExitCode -ne 0) {
     exit 1
 }
 
-$granted = $null
-foreach ($line in ($dump.Output -split "`r?`n")) {
-    if ($line -match [regex]::Escape($permission)) {
-        if ($line -match 'granted=(true|false)') { $granted = $Matches[1] -eq 'true' }
-    }
-}
-
-if ($null -eq $granted) {
-    Write-Result 'FAIL' "$permission is not listed for $Package. Rebuild with the permission declared in AndroidManifest.xml."
+$dumpLines = @($dump.Output -split "`r?`n" | ForEach-Object { $_.Trim() })
+if (-not ($dumpLines | Where-Object { $_ -match [regex]::Escape($permission) })) {
+    Write-Result 'FAIL' "$permission is not requested by $Package. Rebuild with the permission declared in AndroidManifest.xml."
     exit 1
 }
 
-Write-Output "dumpsys     granted=$granted"
+# dumpsys prints this permission for the primary user and again for each secondary user (vivo
+# clone-app / private-space users appear as `granted=..., userId=666` and similar). Only the
+# primary user's entry, which carries no userId suffix, decides the verdict. After a revoke the
+# entry disappears from the granted list entirely, which is itself the not-granted answer.
+$grantLines = @($dumpLines | Where-Object { $_ -match [regex]::Escape($permission) -and $_ -match 'granted=(true|false)' })
+foreach ($line in $grantLines) { Write-Output "dumpsys     $line" }
+
+$primary = @($grantLines | Where-Object { $_ -notmatch 'userId=' })
+if ($primary.Count -eq 0) {
+    $primary = @($grantLines | Where-Object { $_ -match 'userId=0\b' })
+}
+$granted = $primary.Count -gt 0 -and $primary[0] -match 'granted=true'
+if ($primary.Count -eq 0) { Write-Output "dumpsys     $permission is absent from the granted list (not granted)" }
 
 if ($Revoke) {
     if ($granted) {

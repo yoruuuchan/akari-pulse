@@ -419,9 +419,9 @@ async function readBody(request) {
   }
 }
 
-async function handleIngest(request, env, now, { validate, targetPath, itemKey, expectedToken, reportsStale }) {
+async function handleIngest(request, env, now, { validate, targetPath, itemKey, expectedTokens, reportsStale }) {
   const token = request.headers.get("x-akari-bridge-token") || "";
-  if (!expectedToken || token !== expectedToken) {
+  if (!token || !expectedTokens.some((expected) => expected && token === expected)) {
     return failure(401, "UNAUTHORIZED", "a valid X-Akari-Bridge-Token is required", now);
   }
   const { raw, parsed } = await readBody(request);
@@ -549,7 +549,10 @@ export default {
           validate: validateBatch,
           targetPath: "/v1/health/batches",
           itemKey: "events",
-          expectedToken: env.INGEST_TOKEN,
+          // Both the watch and the Android bridge produce health events. They keep separate
+          // credentials so rotating one never forces a rebuild of the other, and this route
+          // accepts either of them.
+          expectedTokens: [env.INGEST_TOKEN, env.PHONE_INGEST_TOKEN],
           reportsStale: false,
         });
       }
@@ -558,7 +561,7 @@ export default {
           validate: validateDailySummaryBatch,
           targetPath: "/v1/health/daily-summaries",
           itemKey: "summaries",
-          expectedToken: env.PHONE_INGEST_TOKEN,
+          expectedTokens: [env.PHONE_INGEST_TOKEN],
           reportsStale: true,
         });
       }
@@ -567,7 +570,7 @@ export default {
           validate: validateSleepSummaryBatch,
           targetPath: "/v1/health/sleep-summaries",
           itemKey: "summaries",
-          expectedToken: env.PHONE_INGEST_TOKEN,
+          expectedTokens: [env.PHONE_INGEST_TOKEN],
           reportsStale: true,
         });
       }

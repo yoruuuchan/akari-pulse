@@ -64,8 +64,12 @@ class AkariHealthClient(
             .post(payload.toString().toRequestBody(mediaType))
             .header("Accept", "application/json")
             .apply {
+                // The relay authenticates with X-Akari-Bridge-Token and the local or VPS service
+                // with the bearer header. One stored credential, both headers, so the same build
+                // works against either target.
                 config.serverToken?.takeIf { it.isNotEmpty() }?.let { token ->
                     header("Authorization", "Bearer $token")
+                    header("X-Akari-Bridge-Token", token)
                 }
             }
             .build()

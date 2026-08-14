@@ -248,3 +248,41 @@ test("a sleep summary that is not an observed day is rejected before it is buffe
   }
   assert.equal(environment.DB.rows.length, 0);
 });
+
+test("the event route accepts either producer credential and still refuses an unknown one", async () => {
+  const environment = env();
+  const phoneEvents = {
+    batch_id: "phone-events",
+    producer: "akari-pulse-android-vivo-private",
+    events: [{
+      event_id: "phone_heart_rate-1767354000000",
+      timestamp: 1_767_354_000_000,
+      metric: "phone_heart_rate",
+      value: 70,
+      unit: "bpm",
+      source_device: "vivo_phone",
+      quality: "latest_snapshot",
+      status: "PASS",
+    }],
+  };
+
+  const withPhoneToken = await post("/v1/health/batches", "phone-token", phoneEvents, environment);
+  assert.equal(withPhoneToken.response.status, 202);
+
+  const watchEvents = { ...phoneEvents, batch_id: "watch-events" };
+  const withWatchToken = await post("/v1/health/batches", "watch-token", watchEvents, environment);
+  assert.equal(withWatchToken.response.status, 202);
+
+  const unknown = await post("/v1/health/batches", "not-a-token", { ...phoneEvents, batch_id: "rejected" }, environment);
+  assert.equal(unknown.response.status, 401);
+  assert.equal(environment.DB.rows.length, 2);
+
+  // The summary routes stay scoped to the phone credential.
+  const watchTokenOnSummaries = await post(
+    "/v1/health/sleep-summaries",
+    "watch-token",
+    { batch_id: "sleep-wrong-token", producer: "android-test", summaries: [sleepSummary()] },
+    environment,
+  );
+  assert.equal(watchTokenOnSummaries.response.status, 401);
+});
