@@ -25,6 +25,39 @@ const EVENT_KEYS = new Set([
   "raw_error_message",
 ]);
 
+const DAILY_SUMMARY_KEYS = new Set([
+  "source",
+  "metric",
+  "source_day",
+  "source_timezone",
+  "value",
+  "unit",
+  "sampled_at",
+  "source_timestamp_available",
+  "status",
+  "outcome",
+  "verification",
+  "raw_error_code",
+  "raw_error_message",
+]);
+
+export const PHONE_DAILY_METRICS = new Map([
+  ["phone_step_count", "count"],
+  ["phone_distance", "m"],
+  ["phone_calories", "kcal"],
+]);
+const PHONE_DAILY_STATUSES = new Set(["PASS", "NO_DATA", "ERROR"]);
+const PHONE_DAILY_OUTCOMES_BY_STATUS = new Map([
+  ["PASS", new Set(["PROVIDER_CALL_SUCCEEDED"])],
+  ["NO_DATA", new Set(["PROVIDER_NO_DATA"])],
+  ["ERROR", new Set(["PROVIDER_CALL_FAILED", "PARSE_FAILED"])],
+]);
+const PHONE_DAILY_VERIFICATIONS = new Set([
+  "VERIFIED",
+  "VERIFIED_FORMATTED_DISPLAY",
+  "UNVERIFIED",
+]);
+
 export class HttpError extends Error {
   constructor(statusCode, code, message, details = undefined) {
     super(message);
@@ -66,6 +99,37 @@ function expectEpoch(value, path) {
     throw new HttpError(400, "INVALID_REQUEST", `${path} must be a non-negative Unix epoch millisecond integer`);
   }
   return value;
+}
+
+function expectSourceDay(value, path) {
+  expectString(value, path, { max: 10, pattern: /^\d{4}-\d{2}-\d{2}$/ });
+  const parsed = Date.parse(`${value}T00:00:00.000Z`);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString().slice(0, 10) !== value) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path} must be a valid calendar date`);
+  }
+  return value;
+}
+
+function expectSourceTimezone(value, path) {
+  expectString(value, path, { max: 64 });
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: value }).format(0);
+  } catch {
+    throw new HttpError(400, "INVALID_REQUEST", `${path} must be an IANA timezone`);
+  }
+  return value;
+}
+
+function expectSampledAt(value, path) {
+  expectString(value, path, { max: 64 });
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path} must be ISO-8601 with an explicit offset`);
+  }
+  const epoch = Date.parse(value);
+  if (!Number.isSafeInteger(epoch) || epoch < 0) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path} must be a valid timestamp`);
+  }
+  return { text: value, epoch };
 }
 
 function optionalNonNegativeInteger(value, path) {
@@ -173,6 +237,97 @@ export function parseHealthBatch(input) {
     producer: expectString(value.producer, "body.producer", { max: 128 }),
     sent_at: value.sent_at === undefined || value.sent_at === null ? null : expectEpoch(value.sent_at, "body.sent_at"),
     events: value.events.map((event, index) => parseHealthEvent(event, `body.events[${index}]`)),
+  };
+}
+
+export function parsePhoneDailySummary(input, path = "summary") {
+  const value = expectObject(input, path);
+  const unknown = Object.keys(value).filter((key) => !DAILY_SUMMARY_KEYS.has(key));
+  if (unknown.length > 0) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path} contains unknown fields`, { fields: unknown });
+  }
+  if (value.source !== "vivo_phone") {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.source must be vivo_phone`);
+  }
+  const metric = expectString(value.metric, `${path}.metric`, {
+    max: 64,
+    pattern: /^[a-z][a-z0-9_]{0,63}$/,
+  });
+  const expectedUnit = PHONE_DAILY_METRICS.get(metric);
+  if (!expectedUnit) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.metric is not supported`);
+  }
+  if (value.unit !== expectedUnit) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.unit must be ${expectedUnit} for ${metric}`);
+  }
+  const status = expectString(value.status, `${path}.status`, { max: 32 });
+  if (!PHONE_DAILY_STATUSES.has(status)) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.status is not supported`);
+  }
+  const outcome = expectString(value.outcome, `${path}.outcome`, { max: 64 });
+  if (!PHONE_DAILY_OUTCOMES_BY_STATUS.get(status).has(outcome)) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.outcome does not match status ${status}`);
+  }
+  const verification = expectString(value.verification, `${path}.verification`, { max: 64 });
+  if (!PHONE_DAILY_VERIFICATIONS.has(verification)) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.verification is not supported`);
+  }
+  if (value.source_timestamp_available !== false) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.source_timestamp_available must be false`);
+  }
+  const hasValue = Object.hasOwn(value, "value");
+  if (status === "PASS") {
+    if (!hasValue || typeof value.value !== "number" || !Number.isFinite(value.value) || value.value < 0) {
+      throw new HttpError(400, "INVALID_REQUEST", `${path}.value must be a non-negative number when status is PASS`);
+    }
+    if (metric === "phone_step_count" && !Number.isSafeInteger(value.value)) {
+      throw new HttpError(400, "INVALID_REQUEST", `${path}.value must be an integer for phone_step_count`);
+    }
+  } else if (hasValue) {
+    throw new HttpError(400, "INVALID_REQUEST", `${path}.value must be absent unless status is PASS`);
+  }
+  const sampledAt = expectSampledAt(value.sampled_at, `${path}.sampled_at`);
+  return {
+    source: value.source,
+    metric,
+    source_day: expectSourceDay(value.source_day, `${path}.source_day`),
+    source_timezone: expectSourceTimezone(value.source_timezone, `${path}.source_timezone`),
+    has_value: hasValue,
+    value: hasValue ? value.value : null,
+    unit: value.unit,
+    sampled_at: sampledAt.text,
+    sampled_at_ms: sampledAt.epoch,
+    source_timestamp_available: false,
+    status,
+    outcome,
+    verification,
+    raw_error_code: optionalString(value.raw_error_code, `${path}.raw_error_code`, 128),
+    raw_error_message: optionalString(value.raw_error_message, `${path}.raw_error_message`, 2048),
+  };
+}
+
+export function parsePhoneDailySummaryBatch(input) {
+  const value = expectObject(input, "body");
+  const allowed = new Set(["batch_id", "producer", "sent_at", "summaries"]);
+  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) {
+    throw new HttpError(400, "INVALID_REQUEST", "body contains unknown fields", { fields: unknown });
+  }
+  if (!Array.isArray(value.summaries) || value.summaries.length < 1 || value.summaries.length > 50) {
+    throw new HttpError(400, "INVALID_REQUEST", "body.summaries must contain between 1 and 50 summaries");
+  }
+  const summaries = value.summaries.map((summary, index) =>
+    parsePhoneDailySummary(summary, `body.summaries[${index}]`),
+  );
+  const keys = summaries.map((summary) => `${summary.source}\u0000${summary.metric}\u0000${summary.source_day}`);
+  if (new Set(keys).size !== keys.length) {
+    throw new HttpError(400, "INVALID_REQUEST", "body.summaries contains duplicate source/metric/source_day keys");
+  }
+  return {
+    batch_id: expectString(value.batch_id, "body.batch_id", { max: 128 }),
+    producer: expectString(value.producer, "body.producer", { max: 128 }),
+    sent_at: value.sent_at === undefined || value.sent_at === null ? null : expectEpoch(value.sent_at, "body.sent_at"),
+    summaries,
   };
 }
 

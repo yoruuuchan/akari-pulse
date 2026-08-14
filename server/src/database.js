@@ -14,14 +14,13 @@ const DIAGNOSTIC_LAYERS = [
   "uplink",
 ];
 
-// Layers that only ever produce records when the Android bridge is on the active
-// path. On the relay-only route they are structurally never populated. When
-// zero records exist for one of these layers, `/v1/status` reports NOT_APPLICABLE
-// with an explanatory note instead of the misleading NO_DATA. If a real record
-// ever arrives (the bridge is re-enabled), the real status takes over.
-const ANDROID_BRIDGE_ONLY_LAYERS = new Set(["phone_receive", "phone_persistence", "uplink"]);
-const ANDROID_BRIDGE_LAYER_NOTE =
-  "android bridge fallback; not on the active relay route";
+// These diagnostic event metrics belong to the Android watch-receiver fallback.
+// The independent phone daily-summary path reports its state through daily-summary
+// records and last_daily_summary_ingest instead. When zero receiver diagnostics
+// exist, `/v1/status` reports NOT_APPLICABLE rather than the misleading NO_DATA.
+const WATCH_BRIDGE_ONLY_LAYERS = new Set(["phone_receive", "phone_persistence", "uplink"]);
+const WATCH_BRIDGE_LAYER_NOTE =
+  "watch receiver bridge fallback; not on the active watch relay route";
 
 // Contract decision (0.1.5): the vivo watch health API can surface a raw value
 // of 0 bpm from bpm-family reads (recent-sample zero shape, or getTodayStatistic
@@ -78,6 +77,26 @@ function toHealthRecord(row) {
   };
 }
 
+function toDailySummary(row) {
+  if (!row) return null;
+  return {
+    source: row.source,
+    metric: row.metric,
+    source_day: row.source_day,
+    source_timezone: row.source_timezone,
+    ...(row.value_json === null ? {} : { value: parseJson(row.value_json) }),
+    unit: row.unit,
+    sampled_at: row.sampled_at,
+    source_timestamp_available: Boolean(row.source_timestamp_available),
+    status: row.status,
+    outcome: row.outcome,
+    verification: row.verification,
+    raw_error_code: row.raw_error_code,
+    raw_error_message: row.raw_error_message,
+    received_at: row.received_at_ms,
+  };
+}
+
 function toSession(row) {
   if (!row) return null;
   return {
@@ -110,6 +129,25 @@ function eventPayload(event) {
     raw_error_message: event.raw_error_message,
   };
   if (event.has_value) payload.value = event.value;
+  return payload;
+}
+
+function dailySummaryPayload(summary) {
+  const payload = {
+    source: summary.source,
+    metric: summary.metric,
+    source_day: summary.source_day,
+    source_timezone: summary.source_timezone,
+    unit: summary.unit,
+    sampled_at: summary.sampled_at,
+    source_timestamp_available: summary.source_timestamp_available,
+    status: summary.status,
+    outcome: summary.outcome,
+    verification: summary.verification,
+    raw_error_code: summary.raw_error_code,
+    raw_error_message: summary.raw_error_message,
+  };
+  if (summary.has_value) payload.value = summary.value;
   return payload;
 }
 
@@ -209,6 +247,67 @@ export class HealthDatabase {
       CREATE INDEX IF NOT EXISTS correlation_events_time
         ON correlation_events(timestamp_ms ASC);
     `);
+
+    const versionRow = this.db
+      .prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'")
+      .get();
+    const version = Number(versionRow?.value);
+    if (!Number.isInteger(version) || version < 1 || version > 2) {
+      throw new Error(`Unsupported Akari Health schema version: ${versionRow?.value ?? "missing"}`);
+    }
+    if (version < 2) {
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        this.db.exec(`
+          CREATE TABLE daily_summaries (
+            source TEXT NOT NULL,
+            metric TEXT NOT NULL,
+            source_day TEXT NOT NULL,
+            source_timezone TEXT NOT NULL,
+            value_json TEXT,
+            numeric_value REAL,
+            unit TEXT NOT NULL,
+            sampled_at TEXT NOT NULL,
+            sampled_at_ms INTEGER NOT NULL,
+            source_timestamp_available INTEGER NOT NULL CHECK (source_timestamp_available = 0),
+            status TEXT NOT NULL CHECK (status IN ('PASS','NO_DATA','ERROR')),
+            outcome TEXT NOT NULL,
+            verification TEXT NOT NULL,
+            raw_error_code TEXT,
+            raw_error_message TEXT,
+            received_at_ms INTEGER NOT NULL,
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY (source, metric, source_day)
+          ) STRICT;
+
+          CREATE INDEX daily_summaries_day_source
+            ON daily_summaries(source_day, source, metric);
+          CREATE INDEX daily_summaries_sampled
+            ON daily_summaries(sampled_at_ms DESC);
+
+          CREATE TABLE daily_summary_batches (
+            batch_id TEXT PRIMARY KEY,
+            producer TEXT NOT NULL,
+            payload_digest TEXT NOT NULL,
+            sent_at_ms INTEGER,
+            received_at_ms INTEGER NOT NULL,
+            summary_count INTEGER NOT NULL,
+            accepted_count INTEGER NOT NULL,
+            duplicate_count INTEGER NOT NULL,
+            stale_count INTEGER NOT NULL
+          ) STRICT;
+
+          CREATE INDEX daily_summary_batches_received
+            ON daily_summary_batches(received_at_ms DESC);
+
+          UPDATE schema_meta SET value = '2' WHERE key = 'schema_version';
+        `);
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      }
+    }
   }
 
   #prepare() {
@@ -237,6 +336,35 @@ export class HealthDatabase {
         batch_id, producer, payload_digest, sent_at_ms, received_at_ms,
         event_count, accepted_count, duplicate_count
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.getDailySummaryBatch = this.db.prepare(
+      "SELECT * FROM daily_summary_batches WHERE batch_id = ?",
+    );
+    this.insertDailySummaryBatch = this.db.prepare(`
+      INSERT INTO daily_summary_batches (
+        batch_id, producer, payload_digest, sent_at_ms, received_at_ms,
+        summary_count, accepted_count, duplicate_count, stale_count
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.getDailySummary = this.db.prepare(`
+      SELECT * FROM daily_summaries
+      WHERE source = ? AND metric = ? AND source_day = ?
+    `);
+    this.insertDailySummary = this.db.prepare(`
+      INSERT INTO daily_summaries (
+        source, metric, source_day, source_timezone, value_json,
+        numeric_value, unit, sampled_at, sampled_at_ms,
+        source_timestamp_available, status, outcome, verification,
+        raw_error_code, raw_error_message, received_at_ms, payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.updateDailySummary = this.db.prepare(`
+      UPDATE daily_summaries SET
+        source_timezone = ?, value_json = ?, numeric_value = ?, unit = ?,
+        sampled_at = ?, sampled_at_ms = ?, source_timestamp_available = ?,
+        status = ?, outcome = ?, verification = ?, raw_error_code = ?,
+        raw_error_message = ?, received_at_ms = ?, payload_json = ?
+      WHERE source = ? AND metric = ? AND source_day = ?
     `);
   }
 
@@ -347,6 +475,144 @@ export class HealthDatabase {
     };
   }
 
+  ingestDailySummaryBatch(batch, receivedAt = Date.now()) {
+    const payloadDigest = createHash("sha256")
+      .update(JSON.stringify({
+        batch_id: batch.batch_id,
+        producer: batch.producer,
+        sent_at: batch.sent_at,
+        summaries: batch.summaries.map(dailySummaryPayload),
+      }))
+      .digest("hex");
+    const priorBatch = this.getDailySummaryBatch.get(batch.batch_id);
+    if (priorBatch) {
+      if (priorBatch.payload_digest !== payloadDigest) {
+        throw new HttpError(409, "BATCH_ID_CONFLICT", "batch_id was already used for a different daily-summary payload");
+      }
+      return {
+        batch_id: priorBatch.batch_id,
+        accepted: priorBatch.accepted_count,
+        duplicates: priorBatch.duplicate_count,
+        stale: priorBatch.stale_count,
+        received_at: priorBatch.received_at_ms,
+        replayed: true,
+      };
+    }
+
+    let accepted = 0;
+    let duplicates = 0;
+    let stale = 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const summary of batch.summaries) {
+        const serializedPayload = JSON.stringify(dailySummaryPayload(summary));
+        const prior = this.getDailySummary.get(summary.source, summary.metric, summary.source_day);
+        if (prior && summary.sampled_at_ms < prior.sampled_at_ms) {
+          stale += 1;
+          continue;
+        }
+        if (prior && summary.sampled_at_ms === prior.sampled_at_ms) {
+          if (prior.payload_json !== serializedPayload) {
+            throw new HttpError(
+              409,
+              "DAILY_SUMMARY_VERSION_CONFLICT",
+              "the same source/metric/source_day and sampled_at was used for different content",
+              { source: summary.source, metric: summary.metric, source_day: summary.source_day },
+            );
+          }
+          duplicates += 1;
+          continue;
+        }
+        const valueJson = summary.has_value ? JSON.stringify(summary.value) : null;
+        const numericValue = summary.has_value ? summary.value : null;
+        if (prior) {
+          this.updateDailySummary.run(
+            summary.source_timezone,
+            valueJson,
+            numericValue,
+            summary.unit,
+            summary.sampled_at,
+            summary.sampled_at_ms,
+            summary.source_timestamp_available ? 1 : 0,
+            summary.status,
+            summary.outcome,
+            summary.verification,
+            summary.raw_error_code,
+            summary.raw_error_message,
+            receivedAt,
+            serializedPayload,
+            summary.source,
+            summary.metric,
+            summary.source_day,
+          );
+        } else {
+          this.insertDailySummary.run(
+            summary.source,
+            summary.metric,
+            summary.source_day,
+            summary.source_timezone,
+            valueJson,
+            numericValue,
+            summary.unit,
+            summary.sampled_at,
+            summary.sampled_at_ms,
+            summary.source_timestamp_available ? 1 : 0,
+            summary.status,
+            summary.outcome,
+            summary.verification,
+            summary.raw_error_code,
+            summary.raw_error_message,
+            receivedAt,
+            serializedPayload,
+          );
+        }
+        accepted += 1;
+      }
+
+      this.insertDailySummaryBatch.run(
+        batch.batch_id,
+        batch.producer,
+        payloadDigest,
+        batch.sent_at,
+        receivedAt,
+        batch.summaries.length,
+        accepted,
+        duplicates,
+        stale,
+      );
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+
+    return {
+      batch_id: batch.batch_id,
+      accepted,
+      duplicates,
+      stale,
+      received_at: receivedAt,
+      replayed: false,
+    };
+  }
+
+  dailySummaries({ sourceDay, metrics = [] }) {
+    const clauses = ["source_day = ?"];
+    const parameters = [sourceDay];
+    if (metrics.length > 0) {
+      clauses.push(`metric IN (${metrics.map(() => "?").join(",")})`);
+      parameters.push(...metrics);
+    }
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM daily_summaries
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY source ASC, metric ASC
+      `)
+      .all(...parameters);
+    return rows.map(toDailySummary);
+  }
+
   queryRange({ metrics = [], from = 0, to = Number.MAX_SAFE_INTEGER, status = "PASS", limit = 500, ascending = true } = {}) {
     const clauses = ["timestamp_ms >= ?", "timestamp_ms <= ?"];
     const parameters = [from, to];
@@ -419,6 +685,9 @@ export class HealthDatabase {
     const recordCounts = this.db
       .prepare("SELECT status, COUNT(*) AS count FROM health_records GROUP BY status ORDER BY status")
       .all();
+    const dailySummaryCounts = this.db
+      .prepare("SELECT status, COUNT(*) AS count FROM daily_summaries GROUP BY status ORDER BY status")
+      .all();
     const metricFreshness = this.db
       .prepare(`
         SELECT metric, MAX(timestamp_ms) AS latest_timestamp, COUNT(*) AS sample_count
@@ -437,6 +706,9 @@ export class HealthDatabase {
     const lastBatch = this.db
       .prepare("SELECT * FROM sync_batches ORDER BY received_at_ms DESC LIMIT 1")
       .get();
+    const lastDailySummaryBatch = this.db
+      .prepare("SELECT * FROM daily_summary_batches ORDER BY received_at_ms DESC LIMIT 1")
+      .get();
     const latestDiagnostics = this.latest({
       metrics: DIAGNOSTIC_LAYERS.map((layer) => `diagnostic_${layer}`),
       status: null,
@@ -453,14 +725,14 @@ export class HealthDatabase {
           message: record.raw_error_message,
           source_device: record.source_device,
         };
-      } else if (ANDROID_BRIDGE_ONLY_LAYERS.has(layer)) {
+      } else if (WATCH_BRIDGE_ONLY_LAYERS.has(layer)) {
         // Zero records ever seen for this bridge-only layer — the relay-only
         // route never produces them. Distinguish this structural absence from
         // NO_DATA (which means "the producer ran but reported nothing").
         layers[layer] = {
           status: "NOT_APPLICABLE",
           timestamp: null,
-          note: ANDROID_BRIDGE_LAYER_NOTE,
+          note: WATCH_BRIDGE_LAYER_NOTE,
         };
       } else {
         layers[layer] = { status: "NO_DATA", timestamp: null };
@@ -476,6 +748,10 @@ export class HealthDatabase {
         status: "PASS",
         record_count: recordCounts.reduce((sum, row) => sum + row.count, 0),
         counts_by_status: Object.fromEntries(recordCounts.map((row) => [row.status, row.count])),
+        daily_summary_count: dailySummaryCounts.reduce((sum, row) => sum + row.count, 0),
+        daily_summary_counts_by_status: Object.fromEntries(
+          dailySummaryCounts.map((row) => [row.status, row.count]),
+        ),
       },
       last_ingest: lastBatch
         ? {
@@ -484,6 +760,16 @@ export class HealthDatabase {
             received_at: lastBatch.received_at_ms,
             accepted: lastBatch.accepted_count,
             duplicates: lastBatch.duplicate_count,
+          }
+        : null,
+      last_daily_summary_ingest: lastDailySummaryBatch
+        ? {
+            batch_id: lastDailySummaryBatch.batch_id,
+            producer: lastDailySummaryBatch.producer,
+            received_at: lastDailySummaryBatch.received_at_ms,
+            accepted: lastDailySummaryBatch.accepted_count,
+            duplicates: lastDailySummaryBatch.duplicate_count,
+            stale: lastDailySummaryBatch.stale_count,
           }
         : null,
       metric_freshness: metricFreshness,

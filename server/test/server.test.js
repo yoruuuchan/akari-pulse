@@ -401,7 +401,7 @@ test("bridge-only layers report NOT_APPLICABLE on the relay-only path", async ()
         "NOT_APPLICABLE",
         `${bridgeLayer} should be NOT_APPLICABLE when no bridge records exist`,
       );
-      assert.equal(layers[bridgeLayer].note, "android bridge fallback; not on the active relay route");
+      assert.equal(layers[bridgeLayer].note, "watch receiver bridge fallback; not on the active watch relay route");
     }
     // Non-bridge layer without evidence remains NO_DATA (not NOT_APPLICABLE).
     assert.equal(layers.watch_module_api.status, "NO_DATA");

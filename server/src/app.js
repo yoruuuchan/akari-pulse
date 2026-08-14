@@ -4,10 +4,12 @@ import { HealthDatabase } from "./database.js";
 import {
   HEALTH_STATUSES,
   HttpError,
+  PHONE_DAILY_METRICS,
   parseCorrelationEvent,
   parseHealthBatch,
   parseIntegerQuery,
   parseMetricList,
+  parsePhoneDailySummaryBatch,
   parseSession,
   parseStopSession,
 } from "./validation.js";
@@ -113,6 +115,60 @@ function summarizeRecords(records) {
   return summary;
 }
 
+function groupDailySummaries(records) {
+  const sources = {};
+  for (const record of records) {
+    if (!sources[record.source]) sources[record.source] = {};
+    sources[record.source][record.metric] = record;
+  }
+  return sources;
+}
+
+function watchStepSource(summary, metric) {
+  if (!summary) return { status: "NO_DATA", metric, value: null };
+  return {
+    status: "PASS",
+    metric,
+    value: summary.daily_value ?? summary.latest?.value ?? null,
+    unit: summary.latest?.unit ?? null,
+    daily_value_semantics: summary.daily_value_semantics ?? null,
+    summary,
+  };
+}
+
+function buildStepSources(metricSummaries, dailySummaries, sourceDay) {
+  const official = watchStepSource(metricSummaries.step_count, "step_count");
+  const sensor = watchStepSource(metricSummaries.step_count_sensor, "step_count_sensor");
+  const phoneSummary = dailySummaries.vivo_phone?.phone_step_count;
+  return {
+    watch: {
+      status: official.status === "PASS" || sensor.status === "PASS" ? "PASS" : "NO_DATA",
+      step_count: official,
+      step_count_sensor: sensor,
+    },
+    phone: phoneSummary
+      ? { ...phoneSummary, value: Object.hasOwn(phoneSummary, "value") ? phoneSummary.value : null }
+      : {
+          source: "vivo_phone",
+          metric: "phone_step_count",
+          source_day: sourceDay,
+          source_timezone: null,
+          status: "NO_DATA",
+          value: null,
+          sampled_at: null,
+          source_timestamp_available: false,
+        },
+  };
+}
+
+function todayStatus(watchRecords, dailySummaryRecords) {
+  if (watchRecords.length > 0 || dailySummaryRecords.some((summary) => summary.status === "PASS")) {
+    return "PASS";
+  }
+  if (dailySummaryRecords.some((summary) => summary.status === "ERROR")) return "ERROR";
+  return "NO_DATA";
+}
+
 function parseRangeQuery(url) {
   const from = parseIntegerQuery(url.searchParams.get("from"), "from", { defaultValue: 0 });
   const to = parseIntegerQuery(url.searchParams.get("to"), "to", { defaultValue: Number.MAX_SAFE_INTEGER });
@@ -190,6 +246,18 @@ export function createHealthService(config, { now = () => Date.now() } = {}) {
         return;
       }
 
+      if (request.method === "POST" && requestUrl.pathname === "/v1/health/daily-summaries") {
+        const batch = parsePhoneDailySummaryBatch(await readJson(request, config.maxBodyBytes));
+        const result = database.ingestDailySummaryBatch(batch, now());
+        sendJson(response, result.replayed ? 200 : 202, {
+          ok: true,
+          status: "PASS",
+          generated_at: now(),
+          data: result,
+        });
+        return;
+      }
+
       if (request.method === "GET" && requestUrl.pathname === "/v1/health/latest") {
         const metrics = parseMetricList(requestUrl.searchParams.get("metrics") || requestUrl.searchParams.get("metric"));
         const statusParameter = requestUrl.searchParams.get("status");
@@ -230,24 +298,40 @@ export function createHealthService(config, { now = () => Date.now() } = {}) {
         }
         const bounds = dateBounds(requestUrl.searchParams.get("date"), signedOffset, now());
         const metrics = parseMetricList(requestUrl.searchParams.get("metrics"));
-        const records = database.queryRange({
-          metrics,
-          from: bounds.start,
-          to: bounds.end,
-          status: "PASS",
-          limit: 5000,
-          ascending: true,
-        });
+        const watchMetrics = metrics.filter((metric) => !PHONE_DAILY_METRICS.has(metric));
+        const phoneMetrics = metrics.filter((metric) => PHONE_DAILY_METRICS.has(metric));
+        const includeWatch = metrics.length === 0 || watchMetrics.length > 0;
+        const includePhone = metrics.length === 0 || phoneMetrics.length > 0;
+        const records = includeWatch
+          ? database.queryRange({
+              metrics: watchMetrics,
+              from: bounds.start,
+              to: bounds.end,
+              status: "PASS",
+              limit: 5000,
+              ascending: true,
+            })
+          : [];
+        const dailySummaryRecords = includePhone
+          ? database.dailySummaries({
+              sourceDay: bounds.date,
+              metrics: phoneMetrics,
+            })
+          : [];
+        const metricSummaries = summarizeRecords(records);
+        const dailySummaries = groupDailySummaries(dailySummaryRecords);
         sendJson(response, 200, {
           ok: true,
-          status: records.length > 0 ? "PASS" : "NO_DATA",
+          status: todayStatus(records, dailySummaryRecords),
           generated_at: now(),
           data: {
             date: bounds.date,
             timezone_offset_minutes: signedOffset,
             from: bounds.start,
             to: bounds.end,
-            metrics: summarizeRecords(records),
+            metrics: metricSummaries,
+            daily_summaries: dailySummaries,
+            steps: buildStepSources(metricSummaries, dailySummaries, bounds.date),
           },
         });
         return;
