@@ -46,6 +46,8 @@ Use Node.js 24 or newer. On the currently verified Node 24.14 runtime, SQLite wo
 | `GET` | `/v1/status` | database, ingest, freshness, and layer diagnostics |
 | `POST` | `/v1/health/batches` | idempotent batch ingest, 1–500 events |
 | `POST` | `/v1/health/daily-summaries` | idempotent phone daily-summary ingest, 1–50 summaries |
+| `POST` | `/v1/health/sleep-summaries` | idempotent phone sleep-summary ingest, one row per source day |
+| `GET` | `/v1/health/sleep-summaries` | stored phone sleep days, newest first, optionally filtered by `source_day` |
 | `GET` | `/v1/health/latest` | latest observation per metric |
 | `GET` | `/v1/health/range` | bounded raw query |
 | `GET` | `/v1/health/today` | local-day summary with explicit UTC offset |
@@ -68,6 +70,10 @@ Phone summaries use a separate mutable-current table keyed by `source + metric +
 `POST /v1/health/batches` accepts the JSON contract in [`contracts/watch-batch.schema.json`](../contracts/watch-batch.schema.json). `PASS` requires a `value`; an absent measurement must use `NO_DATA` or another explicit diagnostic status. Duplicate payloads are acknowledged. Reusing a batch or event ID for different content returns `409` and stores neither interpretation.
 
 `POST /v1/health/daily-summaries` accepts [`contracts/phone-daily-summary-batch.schema.json`](../contracts/phone-daily-summary-batch.schema.json). A new later observation replaces the current row, an exact same-time replay is a duplicate, an older delayed upload is counted as `stale`, and same-time different content returns `409 DAILY_SUMMARY_VERSION_CONFLICT`. `PASS` requires a non-negative value; `NO_DATA` and `ERROR` forbid one. The acknowledgement invariant is `accepted + duplicates + stale == summaries.length`.
+
+`POST /v1/health/sleep-summaries` accepts [`contracts/sleep-summary-batch.schema.json`](../contracts/sleep-summary-batch.schema.json) and applies the same newer/duplicate/stale/conflict ordering, keyed on `source + source_day` alone. Only a successful provider read produces a row, so a night the phone never recorded is simply absent rather than a zero-duration entry. Durations and stage interval lists are stored as the provider reported them; the backend does not recompute or reconcile them.
+
+Schema versions advance through explicit migrations recorded in `schema_meta`; there is no destructive fallback. Version 3 added the sleep tables in place, preserving existing watch records and phone daily summaries.
 
 Schema version 2 creates `daily_summaries` and `daily_summary_batches` in one transaction and preserves all v1 watch, batch, session, and correlation tables. There is no destructive migration fallback.
 

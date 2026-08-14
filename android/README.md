@@ -33,7 +33,8 @@ android/
     data/                           Room entities, transactions, idempotence, upload batching
     diagnostics/                    adapter and uplink runtime state
     network/                        server client and HTTPS/tailnet URL policy
-    phonehealth/                    vivo phone-local today activity reader and state
+    phonehealth/                    vivo phone-local today activity, private sleep, and
+                                    private latest-vitals readers plus their state
     settings/                       preferences and Android Keystore-backed secrets
     sync/                           WorkManager periodic and immediate uplink
     transport/http/                 explicit foreground HTTP probe receiver
@@ -89,6 +90,56 @@ adb logcat -d -s AkariPhoneHealth:I '*:S'
 The bridge screen exposes the same operation as `read today activity`. A completed read now writes three Room v2 rows under `source=vivo_phone`: `phone_step_count`, `phone_distance`, and `phone_calories`. Their composite key is `source + metric + source_day`, so repeated reads replace the current summary for that day instead of summing it. `PASS` is the only state that stores a value; a real zero remains `PASS`, while `NO_DATA` and `ERROR` remain valueless and overwrite any older state rather than using a hidden cache.
 
 The same transaction inserts an immutable outbox batch containing the exact `source_day`, IANA `source_timezone`, observation-only `sampled_at`, `source_timestamp_available=false`, outcome, and verification state. WorkManager retries the stable payload at `POST /v1/health/daily-summaries`. When pointed at the production relay, the configured secret is sent as `X-Akari-Bridge-Token`; when pointed directly at Akari Health it is also sent as the normal bearer credential. A batch is complete only after `accepted + duplicates + stale` equals its three summaries. Watch event persistence and `/v1/health/batches` uplink remain unchanged.
+
+## vivo private health providers
+
+A second, independent phone reader covers last night's sleep and the newest heart-rate / SpO2 / stress observations:
+
+```text
+content://com.vivo.health.provider/sleep            one row per sleep day
+content://com.vivo.health.provider.care/healthCare  MYSELF_DATA HealthDetailBean JSON
+```
+
+Both sit behind `com.vivo.health.widget.permission`, declared `signature|privileged`. A sideloaded build never receives it at install time, so this route requires a one-time owner grant over ADB. It is **not** an ADB-free integration; vivo's official Health Kit remains the ADB-free third-party route.
+
+### owner bootstrap
+
+```powershell
+pwsh -File ..\scripts\bootstrap-vivo-private-health.ps1
+```
+
+The script checks that adb is present, exactly one authorized device is attached, the package is installed, and both provider authorities exist on the device. It then grants the permission and **independently verifies the result through `dumpsys package`** — a silent `pm grant` is never accepted as success, because a ROM can exit 0 without changing anything. vivo clone-app / private-space users appear as extra entries under their own user IDs; only the primary user's entry decides the verdict.
+
+Use `-Revoke` to undo it, which is verified the same way. Use `-Serial <serial>` when more than one device is attached.
+
+**Reinstalling the APK clears the grant.** Re-run the script after every install, and after a factory reset, a device swap, or a system update that resets permissions. A ROM that refuses the grant is reported as `FAIL`, and the app reports `NOT_GRANTED`; neither is worked around.
+
+This changes permission state for Akari Pulse only. It does not modify vivo Health, its database, or any system component.
+
+### capability states
+
+The bridge screen exposes the read as `vivo private health · sleep + latest vitals`. Its capability card is one of:
+
+| State | Meaning |
+|---|---|
+| `GRANTED` | the permission is held and the providers are readable |
+| `NOT_GRANTED` | the providers exist but this build does not hold the permission — run the bootstrap |
+| `UNSUPPORTED` | the provider authorities do not exist on this device |
+| `ERROR` | the probe itself failed; the raw reason is retained |
+
+Only `GRANTED` produces vital observations. Every other state produces null values and an explicit status. There is no cached value, stale response, UI scrape, OCR, or Settings-derived substitute anywhere on this path — an ungranted read is a visible `NOT_GRANTED`, never a disguised success.
+
+On a debug APK the read prints exactly one JSON object under log tag `AkariVivoPrivate`.
+
+### what is stored
+
+Sleep is read **by column name only, never by ordinal position** — the verified ROM returns 38 columns, and a firmware that reorders or extends them must not be able to shift a value into the wrong field. Only columns with confirmed semantics are mapped. Day, timezone, and interval boundaries come from the provider's own columns; Akari does not re-bucket a night from its own observation time and does not infer a stage it was not given.
+
+Room v3 stores one current sleep row per `(source, source_day)` plus an immutable outbox batch, uploaded to `POST /v1/health/sleep-summaries`.
+
+The three latest vitals are stored as ordinary timestamped health events — `phone_heart_rate`, `phone_spo2`, `phone_stress` — each carrying the provider's own measurement timestamp, which is distinct from the read time. They are latest single points, not daily aggregates, and no daily minimum, maximum, average, or resting value is derived from them. They travel through the existing event outbox and `POST /v1/health/batches`; no parallel upload path was added.
+
+The migration to Room v3 is an explicit `MIGRATION_2_3`. No destructive fallback is registered.
 
 ## official vivo RPC boundary
 
@@ -190,9 +241,11 @@ Room uses write-ahead logging and no destructive migration fallback. It stores:
 - inbound watch batch digest and acknowledgement counts for idempotent replay;
 - stable Android watch upload batch ID, `sent_at`, event assignment, attempts, and terminal error text;
 - current phone daily summaries keyed by `source + metric + source_day`, including timezone, observation time, explicit status/outcome, and nullable sync time;
-- immutable phone daily-summary outbox JSON so a retry never changes the content behind a `batch_id`.
+- immutable phone daily-summary outbox JSON so a retry never changes the content behind a `batch_id`;
+- current phone sleep summaries keyed by `source + source_day`, including interval boundaries, durations, wake-up counts, score, and per-stage interval lists;
+- immutable phone sleep-summary outbox JSON under the same retry guarantee.
 
-The worker drains watch batches first and then phone daily-summary batches without changing either contract. Watch events require `accepted + duplicates == event_count`; phone summaries require `accepted + duplicates + stale == summary_count`. A completed older phone outbox batch marks the current row synced only if its `sampled_at` still matches, so it cannot mark a newer local read complete. Network failures, HTTP 408/425/429, and 5xx responses are retryable. Contract conflicts and other permanent failures remain visible and do not delete queued data.
+The worker drains watch/vitals event batches first, then phone daily-summary batches, then phone sleep-summary batches, without changing any contract. Events require `accepted + duplicates == event_count`; both summary kinds require `accepted + duplicates + stale == summary_count`. A completed older phone outbox batch marks the current row synced only if its `sampled_at` still matches, so it cannot mark a newer local read complete. Network failures, HTTP 408/425/429, and 5xx responses are retryable. Contract conflicts and other permanent failures remain visible and do not delete queued data.
 
 `GET <server>/v1/sessions/active` is a read-only status check. Heart-rate/session correlation remains a backend time-window decision; Android does not fabricate a session association.
 
@@ -214,7 +267,8 @@ The app declares only the permissions needed by this implementation:
 - `CHANGE_NETWORK_STATE` as the connected-device foreground-service prerequisite;
 - `FOREGROUND_SERVICE` and `FOREGROUND_SERVICE_CONNECTED_DEVICE` for the user-started HTTP listener;
 - `POST_NOTIFICATIONS` on Android 13+ so that foreground-service state is visible;
-- vivo's normal `com.vivo.assistant.StepProvider` permission for the phone-local summary read.
+- vivo's normal `com.vivo.assistant.StepProvider` permission for the phone-local summary read;
+- vivo's `com.vivo.health.widget.permission` for the private sleep/vitals providers. This one is `signature|privileged` and is never granted at install time; it requires the owner ADB bootstrap described above, and the app reports `NOT_GRANTED` until then.
 
 The AAR and WorkManager merge their own `com.vivo.devicerpc.notify`, `WAKE_LOCK`, and `RECEIVE_BOOT_COMPLETED` declarations. The app does not request Bluetooth, location, body-sensor, or Health Connect permissions because this bridge does not access those APIs directly.
 
@@ -259,11 +313,16 @@ $apksigner = Join-Path $env:ANDROID_HOME 'build-tools\36.1.0\apksigner.bat'
 
 The debug APK uses the local Android debug key. No signing private key is included or copied into this module. The watch RPC configuration must use the package `dev.akari.pulse.bridge` and the SHA-256 certificate fingerprint printed from the exact APK installed on the phone. A release build will have a different fingerprint.
 
-The final 2026-08-14 phone-reader implementation completed 21 unit tests, `assembleDebug`, and `lintDebug`. The installed debug APK was 30,931,114 bytes with SHA-256 `6B4D9C04A2C7B13C9022B2527D224C475FE8DD19E93873FBCA81D06F5E123FC1`; it cold-started successfully on the vivo phone and produced a real nonzero `PASS` result matching the vivo Health UI. This hash is an execution record for the local debug-signed artifact, not a published release promise.
+The 2026-08-14 phone-reader implementation completed 21 unit tests, `assembleDebug`, and `lintDebug`. The installed debug APK was 30,931,114 bytes with SHA-256 `6B4D9C04A2C7B13C9022B2527D224C475FE8DD19E93873FBCA81D06F5E123FC1`; it cold-started successfully on the vivo phone and produced a real nonzero `PASS` result matching the vivo Health UI.
+
+The later 2026-08-14 private-provider build completed **35 unit tests**, `assembleDebug`, `lintDebug`, and `assembleDebugAndroidTest`. The installed debug APK was 31,270,414 bytes with SHA-256 `9F244813100DD40484B88D05677203B67313619CA8B6556B87EDA86B3100AB71`, and the copy on the phone hashed identically. Its on-device instrumentation run reported `OK (2 tests)` covering both the v1 → v2 and v2 → v3 migrations.
+
+These hashes are execution records for locally debug-signed artifacts, not published release promises.
 
 ## remaining real-device gates
 
-- The APK and phone-local today-activity reader were installed and verified on the vivo phone on 2026-08-14. Notification permission, foreground-service survival, and Funtouch OS background behavior for the fallback watch receiver remain separate unverified gates.
+- The APK, the phone-local today-activity reader, and the vivo private sleep/vitals readers were installed and verified on the vivo X200 Pro (`V2405A` / `PD2405`, Android 15) on 2026-08-14. Notification permission, foreground-service survival, and Funtouch OS background behavior for the fallback watch receiver remain separate unverified gates.
+- The private-provider grant is verified on that device and ROM only. Other vivo/iQOO models, other firmware, and the state after a system update, device change, or APK reinstall are unverified and may require re-authorization.
 - No `VIVO_RPC_APP_ID` or `encryStr` is committed; official initialization cannot pass without the issued credentials and matching signing registration.
 - `getHealthDeviceVersion() >= 2`, health-app permission status, BlueXlink connection, package/fingerprint pairing, request/response ACK, and session notification delivery must all be captured on the physical phone/watch pair.
 - `WA2456C` support is explicitly unverified. Unsupported runtime/device behavior must remain `UNSUPPORTED` or `API_MISSING`, never a mock success.

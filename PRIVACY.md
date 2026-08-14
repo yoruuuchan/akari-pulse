@@ -21,6 +21,8 @@ This repository does not provide a shared Akari Pulse cloud, telemetry service, 
 
 Depending on the device capability and enabled sources, records can contain health and activity information such as heart rate, blood oxygen, stress, steps, distance, calories, timestamps, daily summaries, and diagnostic status. Treat these records as sensitive personal data.
 
+Enabling the vivo private sleep provider adds a full night's stage timeline — when you fell asleep, when you woke, and every light/deep/REM/awake interval in between. That is a detailed record of when you are home and unconscious, so treat it as more sensitive than a daily step count, not less.
+
 Akari Pulse preserves source semantics rather than silently merging data from different devices. Missing data stays explicit (`NO_DATA`, `DENIED`, `UNSUPPORTED`, `API_MISSING`, or `ERROR`) and is never replaced with cached or invented values.
 
 ## Secrets

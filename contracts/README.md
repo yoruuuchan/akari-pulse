@@ -134,6 +134,68 @@ X-Akari-Bridge-Token: <PHONE_INGEST_TOKEN>
 
 The relay stores the batch before acknowledging it and the single VPS drain forwards it unchanged to the same backend path. A daily-summary acknowledgement satisfies `accepted + duplicates + stale == summaries.length`; `stale` means a delayed older observation was durably accepted as a batch but did not replace a newer backend row.
 
+## Phone sleep summary to service
+
+A night is a bounded interval with stages, not a natural-day cumulative counter, so the vivo private sleep provider gets its own contracts — [`sleep-summary.schema.json`](sleep-summary.schema.json) and [`sleep-summary-batch.schema.json`](sleep-summary-batch.schema.json) — rather than being forced into `phone_daily_summary`:
+
+```json
+{
+  "batch_id": "phone-sleep-<stable UUID>",
+  "producer": "akari-pulse-android",
+  "sent_at": 1772000000000,
+  "summaries": [
+    {
+      "source": "vivo_phone",
+      "source_day": "2026-03-05",
+      "source_timezone": "Asia/Shanghai",
+      "sleep_start": 1772000000000,
+      "sleep_end": 1772027000000,
+      "sampled_at": "2026-03-05T08:15:00.000+08:00",
+      "status": "PASS",
+      "outcome": "PROVIDER_CALL_SUCCEEDED",
+      "verification": "VERIFIED",
+      "total_duration_ms": 25200000,
+      "stages": {
+        "light": [{ "start": 1772000000000, "end": 1772003600000 }],
+        "deep": [],
+        "rem": [],
+        "awake": []
+      }
+    }
+  ]
+}
+```
+
+Every number above is invented and the stage lists are truncated. This example shows the
+shape only; it is not anyone's sleep record.
+
+`source_day` is the immutable partition key: it is the local calendar day the wake-up time falls in, taken from the provider's own columns and never re-bucketed from `sampled_at` or a caller timezone. `sampled_at` is only the time Akari observed the provider.
+
+Only `PASS` / `PROVIDER_CALL_SUCCEEDED` produces a sleep summary. A night the provider did not report is absent, not a zero-duration row.
+
+The cursor is read **by column name, never by ordinal position**, and only columns with confirmed semantics are mapped. A stage the provider did not report stays absent rather than becoming an empty list, so "no REM recorded" and "REM list is empty" remain distinguishable. Duration fields and the stage interval lists are carried through unchanged; Akari does not recompute them, and does not infer a stage it was not given.
+
+Three provider identities hold on the verified ROM and are preserved rather than enforced: `light + deep + rem == total_duration_ms`, `sleep_end - sleep_start == chart_total_duration_ms`, and `chart_total_duration_ms - awake == night_sleep_duration_ms`. Wake-up counts include only awake intervals lying strictly inside `[sleep_start, sleep_end]`.
+
+Android keys the current row on `source + source_day` and inserts an immutable outbox batch in the same transaction. Production upload is:
+
+```text
+POST https://pulse.example.com/v1/health/sleep-summaries
+X-Akari-Bridge-Token: <PHONE_INGEST_TOKEN>
+```
+
+Acknowledgement satisfies `accepted + duplicates + stale == summaries.length`, matching the daily-summary rule. Repeated reads of the same night are separate immutable batches that each update the one current row for that `source_day`.
+
+## Phone latest vitals to service
+
+The vivo private care provider exposes `MYSELF_DATA` as the newest single observation for heart rate, SpO2, and stress. Each carries **its own provider measurement timestamp**, which is distinct from Akari's read time, plus an abnormality flag and the source vivo recorded.
+
+These travel as ordinary timestamped health events under `phone_heart_rate`, `phone_spo2`, and `phone_stress` — not as daily summaries, because a latest point is not a daily aggregate. The contract exposes no phone-side daily minimum, maximum, average, or resting value derived from them.
+
+`quality` records that the observation is a latest snapshot, `source_api` records the provider and payload key, and `source_module` carries vivo's own reported origin. Event IDs derive from the provider timestamp on `PASS` and from the read time otherwise, so a `NO_DATA` or `ERROR` state can never collide with a real observation.
+
+The capability itself is uploaded as `diagnostic_vivo_private_health` with one of `GRANTED`, `NOT_GRANTED`, `UNSUPPORTED`, or `ERROR`. The capability event is always sent; the three vital events are sent only when the capability is `GRANTED`. Losing the permission produces an explicit negative state and never a cached or substituted value.
+
 ## Status vocabulary
 
 | Status | Meaning |
@@ -149,7 +211,7 @@ The event-level `status` vocabulary is closed. Layer summaries in `/v1/status`
 may additionally report `NOT_APPLICABLE` for bridge-only layers when zero
 records exist for them (see the query rule below).
 
-Diagnostics use metrics named `diagnostic_<layer>`, including `diagnostic_watch_module_api`, `diagnostic_permission`, `diagnostic_sample_acquisition`, `diagnostic_watch_transport`, `diagnostic_phone_receive`, `diagnostic_phone_persistence`, and `diagnostic_uplink`.
+Diagnostics use metrics named `diagnostic_<layer>`, including `diagnostic_watch_module_api`, `diagnostic_permission`, `diagnostic_sample_acquisition`, `diagnostic_watch_transport`, `diagnostic_phone_receive`, `diagnostic_phone_persistence`, `diagnostic_uplink`, and `diagnostic_vivo_private_health`.
 
 ## Query validity rule: bpm-family value 0
 

@@ -123,6 +123,44 @@ adb shell am instrument -w -r dev.akari.pulse.bridge.test/androidx.test.runner.A
 
 Result: `OK (1 test)`. The migration test preserves a schema-1 watch row and validates schema-2 phone upsert semantics. The first two real provider reads created two completed immutable outboxes and one later current row per phone metric; a subsequent third real refresh advanced the production current values through a third distinct batch. Relay drain, production SQLite fields, official Streamable HTTP MCP calls, and the unchanged watch record count are documented in [REAL_DEVICE_RESULTS.md](REAL_DEVICE_RESULTS.md).
 
+### 2026-08-14 vivo private sleep and vitals extension
+
+```powershell
+Set-Location .\android
+.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:assembleDebugAndroidTest `
+  --no-daemon --max-workers=1 --console=plain
+```
+
+Result: `BUILD SUCCESSFUL`, 35 unit tests with zero failures or errors, lint with no blocking issue. The new reader tests use **synthetic fixtures only** — structurally identical cursors and payloads with invented numbers — so no personal health value enters the repository. They cover column-name addressing, an absent optional column staying null rather than becoming zero, the three provider identities, the strictly-interior wake-up rule, a non-finite or non-positive vital falling to `NO_DATA`, and each capability state.
+
+The root `npm test` run passed all three workspaces: server 17/17, real MCP end-to-end 2/2, and Cloudflare relay 5/5. The server suite adds sleep-summary ingest, one-row-per-`source_day` upsert, the newer/duplicate/stale ordering rules, explicit absence, phone vitals staying beside watch vitals under their own metric names, the in-place v2 → v3 schema migration, and a denied capability surfacing as `DENIED` rather than as a missing layer.
+
+Migration testing was run on the physical phone rather than an emulator. The compiled instrumentation APK is installed and invoked directly so the harness does not clear the configured application data:
+
+```powershell
+adb install -r .\app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk
+adb shell "am instrument -w -r dev.akari.pulse.bridge.test/androidx.test.runner.AndroidJUnitRunner"
+```
+
+Result: `OK (2 tests)` — the existing v1 → v2 test plus a new v2 → v3 test asserting that existing rows survive and that one sleep row is kept per `source_day`. Rebuild the androidTest APK with `:app:assembleDebugAndroidTest` before running; `:app:compileDebugAndroidTestKotlin` alone leaves a stale APK on disk and will silently run the old test set.
+
+Before writing any acceptance result, confirm the phone is running the APK you just built:
+
+```powershell
+$p = (adb shell "pm path dev.akari.pulse.bridge") -replace 'package:',''
+adb shell "sha256sum $($p.Trim())"
+Get-FileHash .\app\build\outputs\apk\debug\app-debug.apk -Algorithm SHA256
+```
+
+The owner ADB bootstrap for the private providers is itself verified rather than assumed — it reads the grant back from `dumpsys package` instead of trusting the `pm grant` exit code. Exercise both directions:
+
+```powershell
+pwsh -File .\scripts\bootstrap-vivo-private-health.ps1 -Revoke
+pwsh -File .\scripts\bootstrap-vivo-private-health.ps1
+```
+
+A revoked device must report `NOT_GRANTED` in the app with every value null, and a re-granted device must report `GRANTED` before any read result is treated as evidence. Device outcomes are in [REAL_DEVICE_RESULTS.md](REAL_DEVICE_RESULTS.md).
+
 ## BlueOS build and package validation
 
 The watch source is compiled with the BlueOS Studio 2.0.5 bundled Node `18.20.3`, `blueos-pack 1.0.9-beta.24`, and compiler commit `2b772929`. From `watch`, the equivalent packager operation is:

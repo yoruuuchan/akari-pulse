@@ -7,19 +7,29 @@ watch @blueos.network.fetch
   -> POST https://pulse.example.com/v1/health/batches   (X-Akari-Bridge-Token)
 Android vivo today reader
   -> POST https://pulse.example.com/v1/health/daily-summaries (separate X-Akari-Bridge-Token)
+Android vivo private sleep reader
+  -> POST https://pulse.example.com/v1/health/sleep-summaries (same phone token)
+Android vivo private vitals reader
+  -> POST https://pulse.example.com/v1/health/batches          (same phone token)
   -> D1 relay_batches row (INSERT before ACK)
   -> scripts/drain-relay.mjs pulls /v1/relay/pending            (Bearer ADMIN_TOKEN)
-  -> POST the row's recorded target_path on 127.0.0.1:8787
+  -> POST the row's recorded target_path on the backend
   -> POST /v1/relay/drained deletes only locally-acknowledged rows
 ```
+
+The phone's latest vitals are ordinary timestamped health events, so they use the existing
+event route rather than a fourth one. That route therefore accepts either producer credential:
+the watch's `INGEST_TOKEN` or the phone's `PHONE_INGEST_TOKEN`. The summary routes remain
+phone-only.
 
 ## Routes
 
 | Route | Auth | Behavior |
 |---|---|---|
 | `GET /healthz` | none | liveness JSON; used by the watch `net probe` |
-| `POST /v1/health/batches` | `X-Akari-Bridge-Token` | strict watch-batch validation; insert-then-ACK; idempotent replay by `batch_id`+payload hash; differing reuse returns `409 BATCH_ID_CONFLICT` |
-| `POST /v1/health/daily-summaries` | separate `X-Akari-Bridge-Token` | strict phone daily-summary validation; preserves source day/timezone and buffers the unchanged batch for the backend daily-summary route |
+| `POST /v1/health/batches` | `X-Akari-Bridge-Token` (watch **or** phone token) | strict watch-batch validation; insert-then-ACK; idempotent replay by `batch_id`+payload hash; differing reuse returns `409 BATCH_ID_CONFLICT` |
+| `POST /v1/health/daily-summaries` | phone `X-Akari-Bridge-Token` | strict phone daily-summary validation; preserves source day/timezone and buffers the unchanged batch for the backend daily-summary route |
+| `POST /v1/health/sleep-summaries` | phone `X-Akari-Bridge-Token` | strict phone sleep-summary validation; preserves the provider's source day, timezone, interval boundaries, and stage lists unchanged |
 | `GET /v1/relay/pending?limit=N` | `Bearer ADMIN_TOKEN` | oldest-first stored batches with `row_id` |
 | `POST /v1/relay/drained {row_ids}` | `Bearer ADMIN_TOKEN` | deletes confirmed rows |
 | `GET /v1/relay/status` | `Bearer ADMIN_TOKEN` | pending count and age range |
@@ -30,7 +40,7 @@ dequeues: 2xx, `ok === true`, matching `data.batch_id`, and non-negative integer
 reports `accepted = events.length, duplicates = 0`; real event-level dedup happens in the
 local service, which is the durable store of record.
 
-Daily-summary ACKs add `stale` and require `accepted + duplicates + stale` to equal the submitted summary count. The relay initially reports all items accepted and `stale = 0`; the backend decides whether an older observation is stale when the VPS drains it.
+Daily-summary and sleep-summary ACKs add `stale` and require `accepted + duplicates + stale` to equal the submitted summary count. The relay initially reports all items accepted and `stale = 0`; the backend decides whether an older observation is stale when the VPS drains it.
 
 ## Deploy
 
@@ -71,6 +81,6 @@ The drain client deletes a relay row only after the target service acknowledged 
 
 ## Privacy boundary
 
-The relay buffers real health events and phone daily summaries on Cloudflare (APAC D1) until the next drain. Rows are
+The relay buffers real health events, phone daily summaries, and phone sleep summaries on Cloudflare (APAC D1) until the next drain. A sleep summary is a full night's stage timeline, so treat this buffer as carrying sensitive data even though it is short-lived. Rows are
 deleted on drain confirmation; nothing else reads them. Do not add query routes to the
 relay — reads belong to the local service and MCP.

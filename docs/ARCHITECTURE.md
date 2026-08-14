@@ -3,9 +3,12 @@
 ## System boundary
 
 ```text
-vivo WATCH GT (WA2456C)                 vivo phone StepProvider
-  health + sensor APIs                    Android Room v2 current daily summaries
-  durable unsent queue                    + immutable outbox
+vivo WATCH GT (WA2456C)                 vivo phone providers
+  health + sensor APIs                    StepProvider  -> daily summaries
+  durable unsent queue                    private sleep -> sleep summary
+                                          private care  -> latest vitals
+                                        Android Room v3 current rows
+                                          + immutable outboxes
         |                                       |
         | @blueos.network.fetch                 | Android HTTPS uplink
         | X-Akari-Bridge-Token                  | separate phone X-Akari-Bridge-Token
@@ -13,7 +16,7 @@ vivo WATCH GT (WA2456C)                 vivo phone StepProvider
                             |   |
                             v   v
 akari-pulse-relay (Cloudflare Worker + D1 buffer)
-  strict watch-event / phone-summary validation, insert-then-ACK
+  strict watch-event / phone-summary / sleep-summary validation, insert-then-ACK
   https://pulse.example.com
         |
         | akari-drain.timer on the Tokyo VPS, every 2 min
@@ -22,6 +25,7 @@ akari-pulse-relay (Cloudflare Worker + D1 buffer)
 Akari Health service  (Tokyo VPS, 127.0.0.1:28787, systemd)
   append-only health records
   idempotently updated phone daily summaries keyed by source day
+  one sleep summary row per phone source day
   sessions + correlation events
   SQLite
         |
@@ -95,6 +99,41 @@ The service schema v2 keeps `daily_summaries` mutable only at the composite key 
 
 `/v1/health/today` preserves the legacy watch `metrics` object and adds phone `daily_summaries` plus a source-parallel `steps` object. Phone/watch values are never merged and neither is assigned precedence. Distance/calorie verification state remains attached to the phone records rather than making them interchangeable with watch metrics.
 
+## Vivo private health providers
+
+A second phone-local boundary reads two private vivo providers under `source=vivo_phone`, alongside — never instead of — the today-activity path:
+
+| Provider | Shape | Akari contract |
+|---|---|---|
+| `content://com.vivo.health.provider/sleep` | one row per sleep day, 38 columns on the verified ROM | its own sleep-summary contract |
+| `content://com.vivo.health.provider.care/healthCare` | `MYSELF_DATA` HealthDetailBean JSON | three timestamped observations in the existing health-event outbox |
+
+Both providers sit behind `com.vivo.health.widget.permission`, which is declared `signature|privileged`. A third-party build never receives it at install time; it is granted once by the device owner over ADB through `scripts/bootstrap-vivo-private-health.ps1`. This is deliberately an owner bootstrap and not a distributable capability — vivo's Health Kit remains the ADB-free third-party route.
+
+### Capability, not fallback
+
+`vivo_private_health_provider` has four states: `GRANTED`, `NOT_GRANTED`, `UNSUPPORTED`, and `ERROR`. The reader distinguishes them structurally: `packageManager.resolveContentProvider` separates a device that has no such authority (`UNSUPPORTED`) from one that has it but refuses this caller (`NOT_GRANTED`). Reinstalling the APK clears the grant, so the app must be able to report `NOT_GRANTED` at any time — and does, with every value null. There is no cached, stale, UI-scraped, or Settings-derived substitute anywhere on this path.
+
+The capability outcome is itself uploaded as a diagnostic observation, so `/v1/status` reports this layer independently of the watch layers and of the today-activity path.
+
+### Sleep semantics
+
+The sleep cursor is read **by column name only**, never by ordinal position, so a firmware that reorders or extends the cursor cannot shift a value into the wrong field. Only columns with confirmed semantics are mapped; the rest are ignored rather than guessed, and a stage the provider did not report stays absent rather than becoming zero.
+
+Day attribution, timezone, and event timestamps are taken from the provider's own columns. Akari never re-buckets a sleep day from its own observation time. Three identities hold on the verified ROM and are preserved end to end: light + deep + REM equals total sleep; wake minus onset equals the chart total; the chart total minus awake equals night sleep.
+
+Wake-up counts include only awake intervals lying strictly inside the onset/wake window, which is what reproduces the vivo UI's own count and duration.
+
+Sleep gets its own contract rather than being forced into `phone_daily_summary`, because a night is a bounded interval with stages, not a natural-day cumulative counter. Room v3 keys the current row on `(source, source_day)` and backs it with immutable upload batches; the service applies the same newer-observation-wins, duplicate, stale, and conflict rules used for daily summaries.
+
+### Latest-vitals semantics
+
+`MYSELF_DATA` yields the newest single heart-rate, SpO2, and stress observation, each with its own provider measurement timestamp and abnormality flag. These are modelled as timestamped observations in the existing health-event outbox — `phone_heart_rate`, `phone_spo2`, `phone_stress` — rather than as a natural-day summary, because a latest point is not a daily aggregate.
+
+The contract therefore exposes no phone-side daily minimum, maximum, average, or resting value derived from them, and MCP output states that limit explicitly. Event IDs are derived from the provider timestamp on `PASS` and from the read time otherwise, so a non-`PASS` state can never collide with a real observation.
+
+Room v3 is reached through an explicit `MIGRATION_2_3`; the database registers no destructive fallback.
+
 ## Service durability and queries
 
 The Node.js service uses `node:sqlite` in WAL mode for file-backed databases. `health_records` and `sync_batches` are append-only through the HTTP API. Batch and event IDs are idempotent only for identical payloads; reusing an ID for different content returns `409` without choosing either interpretation.
@@ -106,6 +145,10 @@ The service also owns mutable session metadata and immutable correlation events.
 The stdio MCP calls the authenticated service rather than opening SQLite. It exposes read-only health tools plus two non-destructive session-metadata writes. Raw samples cannot be updated or deleted through MCP. Standard output is reserved for JSON-RPC; process diagnostics use standard error.
 
 `health_steps` returns watch `step_count`, watch `step_count_sensor`, and phone `phone_step_count` side by side. It does not merge sources or state a phone/watch preference; the sensor record remains explicitly labeled as cumulative-since-boot rather than a calendar-day total. Sleep, SpO2, and stress tools include non-`PASS` diagnostic records so `DENIED`, `UNSUPPORTED`, and `API_MISSING` are not hidden as empty data.
+
+`health_sleep` answers last night from the phone's sleep summary — onset, wake, total, deep, light, REM, wake-ups, score, deep-sleep continuity — beside the watch's sleep observations, and says so explicitly when no phone sleep day is stored rather than reaching for an adjacent day. `health_heart_rate`, `health_spo2`, and `health_stress` return the watch metric and its `phone_` counterpart together, each labelled with its own source device and source time. When a tool returns the phone vital next to a windowed watch query, it also returns the machine-readable note that the phone value is a single latest snapshot rather than a windowed sample or a daily aggregate.
+
+No tool merges the two sources or assigns precedence between them.
 
 ## Status and diagnostic model
 
@@ -120,7 +163,7 @@ All producers use one status vocabulary:
 | `API_MISSING` | the expected module, function, configuration, or credential is absent |
 | `ERROR` | another explicit failure; raw code/message are retained |
 
-Layer diagnostics are independent: `watch_module_api`, `permission`, `sample_acquisition`, `watch_transport`, `phone_receive`, `phone_persistence`, `uplink`, `backend_ingest`, `database`, and `mcp_query`. A later healthy layer never overwrites an earlier failure.
+Layer diagnostics are independent: `watch_module_api`, `permission`, `sample_acquisition`, `watch_transport`, `phone_receive`, `phone_persistence`, `uplink`, `vivo_private_health`, `backend_ingest`, `database`, and `mcp_query`. A later healthy layer never overwrites an earlier failure.
 
 The event-level status vocabulary above is closed. Layer summaries in
 `/v1/status` may additionally report `NOT_APPLICABLE` for
@@ -152,6 +195,7 @@ See `contracts/README.md` for the full contract decision.
 - The Tailscale script binds the exact current tailnet IPv4 and does not change Tailscale, Serve/Funnel, grants, or Windows Firewall state.
 - The HTTP watch probe has a separate bridge token.
 - No vivo account token, MAC address, serial number, cookie, developer SDK key, or private signing key is committed or logged.
+- The private-provider grant is an explicit, reversible owner action on the owner's own device. The bootstrap script changes permission state for Akari Pulse only; it does not modify vivo Health, its database, or any system component, and `-Revoke` undoes it.
 - `/healthz` is unauthenticated but contains liveness only; all data/status routes honor configured authentication.
 - Health records have no update/delete route.
 

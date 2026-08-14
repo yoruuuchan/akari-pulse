@@ -4,12 +4,16 @@ Since 2026-08-12 the always-on store of record runs on the AWS Lightsail Tokyo b
 (`ssh your-vps`), so claude.ai / ChatGPT can query health data with the PC off:
 
 ```text
-watch → https://pulse.example.com (operator-owned relay buffer, Cloudflare)
+watch + phone → https://pulse.example.com (operator-owned relay buffer, Cloudflare)
       → your-vps systemd timer drains every 2 min
       → Akari Health service (127.0.0.1:28787, /home/ubuntu/akari-pulse/data/akari-health.sqlite)
       → MCP over Streamable HTTP (127.0.0.1:28788)
       → Cloudflare Tunnel "your-tunnel-name" → https://pulse-mcp.example.com/mcp/<secret>
 ```
+
+The drain forwards each relay row to the backend path recorded with it, so watch events,
+phone events, phone daily summaries, and phone sleep summaries all travel through this one
+timer without any per-kind configuration.
 
 **Single-drainer rule: the VPS timer is the only drain client.** Running
 `scripts/drain-relay.mjs` anywhere else (e.g. the Windows PC) would steal batches into a
@@ -56,4 +60,10 @@ https://pulse-mcp.example.com/mcp/<AKARI_MCP_HTTP_PATH token>
 The full URL is the credential (TLS-protected, unguessable path; connector UIs cannot
 send custom auth headers without OAuth). Treat it like a password; rotate as above.
 Verified 2026-08-12 with the official `StreamableHTTPClientTransport`: 14 tools listed,
-physical-watch records returned over the public path.
+physical-watch records returned over the public path. Reverified 2026-08-14 after the
+vivo private sleep/vitals work: the same 14 tools returned phone and watch sources side by
+side, and the backend schema advanced 2 → 3 through an explicit migration with existing
+records preserved.
+
+Back up `data/akari-health.sqlite` before any schema-changing deploy. The 2026-08-14 upgrade
+took a timestamped backup of the database and every replaced file first.
