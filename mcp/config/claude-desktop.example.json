@@ -1,11 +1,11 @@
 {
   "mcpServers": {
     "akari-health": {
-      "command": "F:\\node.exe",
+      "command": "node",
       "args": [
-        "E:\\BlueOS\\akari-pulse\\mcp\\src\\index.js"
+        "C:\\path\\to\\akari-pulse\\mcp\\src\\index.js"
       ],
-      "cwd": "E:\\BlueOS\\akari-pulse",
+      "cwd": "C:\\path\\to\\akari-pulse",
       "env": {
         "AKARI_HEALTH_URL": "http://127.0.0.1:8787",
         "AKARI_HEALTH_TOKEN": "replace-with-the-service-token-or-remove-for-loopback-without-a-token"
@@ -13,4 +13,3 @@
     }
   }
 }
-

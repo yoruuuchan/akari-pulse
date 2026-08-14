@@ -41,9 +41,12 @@ https://pulse-mcp.example.com/mcp/<secret>
   Claude / ChatGPT custom connectors, any compatible MCP client
 ```
 
-The store of record moved to the Tokyo VPS on 2026-08-12 so queries work with the PC off;
-the Windows-side service remains a development instance. The VPS drain timer is the only
-drain client (single-drainer rule — see [../deploy/tokyo/README.md](../deploy/tokyo/README.md)).
+Addresses above are placeholders. The reference deployment puts the store of record on an
+always-on VPS so queries still work with the developer's PC off, leaving the desktop
+service as a development instance; running everything on one machine is equally valid.
+Whichever you choose, exactly one process may drain the relay (single-drainer rule — a
+second drainer would steal batches into a different database and split the record). See
+[../deploy/tokyo/README.md](../deploy/tokyo/README.md).
 
 The Android bridge's BlueXlink receiver and LAN HTTP listener remain fallback/diagnostic watch layers: BlueXlink is closed as unsupported/credential-blocked on `WA2456C` (see [RESEARCH.md](RESEARCH.md) 2026-08-12), and the LAN listener matters only if the watch relay route fails the `net probe` gate. The same APK is now an active, independent producer for the vivo phone's today-activity daily summaries; that path does not pass through BlueXlink or the LAN listener.
 

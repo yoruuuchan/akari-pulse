@@ -1,6 +1,6 @@
 # Akari Health MCP
 
-This is an independent, tool-only MCP server. It does not modify the existing Akari Surface Desktop MCP and does not open the SQLite file directly; all reads and session-metadata writes go through the Akari Health HTTP service.
+This is an independent, tool-only MCP server. It runs as its own process and does not open the SQLite file directly; all reads and session-metadata writes go through the Akari Health HTTP service, so adding it alongside your other MCP servers changes none of them.
 
 It uses the official MCP TypeScript SDK v2 and negotiates the `2026-07-28` protocol over stdio. Standard output is reserved for MCP JSON-RPC; diagnostics go to standard error.
 

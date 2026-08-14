@@ -11,7 +11,8 @@
 #   changes the sample_acquisition layer diag to a per-metric breakdown message;
 #   adds one new one-per-launch button `probe sleep` covering SLEEP_STATUS /
 #   SLEEP_UNIT / SLEEP_STAGES via getRecentSamples plus (if health.getStatistic
-#   exists at runtime) a ranged last-night probe. 0.1.5 is NOT device-verified yet.
+#   exists at runtime) a ranged last-night probe. 0.1.5 was device-verified on
+#   2026-08-12; see docs/REAL_DEVICE_RESULTS.md.
 # BlueOS prior diagnostics 0.1.1 / 0.1.2 / 0.1.3 / 0.1.4 remain preserved under their versioned filenames.
 #
 # Bytes: 31164014, 8757, 15674, 69585, 69649, 75466, 84899, 89461 in the order listed below.

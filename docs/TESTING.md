@@ -1,6 +1,6 @@
 # Testing and verification
 
-This file separates host-verifiable results from the device evidence that is still unavailable. Commands are run from `E:\BlueOS\akari-pulse` unless a different working directory is shown. Test fixtures use temporary databases and are never inserted into the production database.
+This file separates host-verifiable results from the device evidence that is still unavailable. Commands are run from the repository root unless a different working directory is shown. Test fixtures use temporary databases and are never inserted into the production database.
 
 ## Verified host environment
 
@@ -214,6 +214,14 @@ akari-pulse-mcp-0.1.0.tgz      8,757 bytes  7D7DA216EBF343045282EB335863184E5DAC
 
 The watch was not directly attached to BlueOS Studio or ADB on this build host, but the user performed OrbitV tests on the named physical watch. OrbitV installation, the `READ_HEALTH_DATA` grant, one real nonzero heart-rate result in `0.1.0`, idle stability in `0.1.1`, and the two reported full-watch reboots are recorded in [REAL_DEVICE_RESULTS.md](REAL_DEVICE_RESULTS.md). There is still no device crash log or reboot reason.
 
-The `0.1.2` isolated HR layers, live callback cadence, other health capabilities, screen-off behavior, official RPC credential acceptance, WA2456C channel support, business ACK shape, HTTP reachability from the watch, APK installation, OEM background behavior, remote tailnet upload, and MCP queries over real watch records remain unverified.
+Since that record was written, the `0.1.2` isolated HR layers, watch HTTPS reachability through the paired phone, APK installation, and MCP queries over real watch records have all been verified on the physical devices — those results are in [REAL_DEVICE_RESULTS.md](REAL_DEVICE_RESULTS.md).
+
+What remains unverified:
+
+- live callback cadence over a long subscription and screen-off behavior on the watch;
+- official RPC credential acceptance, `WA2456C` BlueXlink channel support, and the business ACK shape on that channel (the route is classified closed, not merely untested);
+- vivo OEM background/autostart behavior for the fallback Android watch receiver;
+- remote tailnet upload from the phone;
+- every capability on any device other than the two named in [REAL_DEVICE_RESULTS.md](REAL_DEVICE_RESULTS.md).
 
 Run the short procedure in [REAL_DEVICE_RESULTS.md](REAL_DEVICE_RESULTS.md). Only record `PASS` when the observed operation returns real evidence; keep empty/denied/unsupported/missing/error outcomes distinct and retain the safe raw code/message.

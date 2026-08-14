@@ -308,7 +308,7 @@ $apk = '.\app\build\outputs\apk\debug\app-debug.apk'
 $apksigner = Join-Path $env:ANDROID_HOME 'build-tools\36.1.0\apksigner.bat'
 
 & $apksigner verify --verbose --print-certs $apk
-& 'D:\platform-tools\adb.exe' install -r $apk
+adb install -r $apk
 ```
 
 The debug APK uses the local Android debug key. No signing private key is included or copied into this module. The watch RPC configuration must use the package `dev.akari.pulse.bridge` and the SHA-256 certificate fingerprint printed from the exact APK installed on the phone. A release build will have a different fingerprint.

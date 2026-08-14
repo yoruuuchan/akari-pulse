@@ -1,13 +1,14 @@
-# Append this table to ~/.codex/config.toml after adjusting paths for the host.
+# Append this table to ~/.codex/config.toml after adjusting the paths for your host.
+# `command` may be plain `node` when Node 24+ is on PATH; the absolute form below is only
+# needed when several Node versions are installed.
 # AKARI_HEALTH_TOKEN is forwarded from the local process environment and is not stored here.
 
 [mcp_servers.akari-health]
-command = 'F:\node.exe'
-args = ['E:\BlueOS\akari-pulse\mcp\src\index.js']
-cwd = 'E:\BlueOS\akari-pulse'
+command = 'node'
+args = ['C:\path\to\akari-pulse\mcp\src\index.js']
+cwd = 'C:\path\to\akari-pulse'
 env_vars = ['AKARI_HEALTH_TOKEN']
 startup_timeout_sec = 30
 
 [mcp_servers.akari-health.env]
 AKARI_HEALTH_URL = 'http://127.0.0.1:8787'
-

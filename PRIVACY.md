@@ -1,5 +1,13 @@
 # Privacy
 
+**Your health data stays yours. It is never uploaded to an Akari Pulse server, because
+there is no Akari Pulse server.**
+
+This project ships no shared cloud, no telemetry, no analytics endpoint, no crash
+reporting, no update check, and no central health-data database. Nothing in this
+repository phones home. Every destination the data reaches is one you deployed and
+control: your relay, your database, your backend, your MCP endpoint.
+
 Akari Pulse is designed for self-hosted personal health data. The intended operator is the person who owns the phone/watch and the infrastructure receiving the data.
 
 ## Data flow
@@ -15,7 +23,9 @@ owned vivo phone/watch
   -> the AI client chosen by the operator
 ```
 
-This repository does not provide a shared Akari Pulse cloud, telemetry service, analytics endpoint, or central health-data database.
+The only party that ever receives a health value besides your own infrastructure is the AI
+client you deliberately point at your MCP endpoint — and it receives only the result of the
+query you asked, never the database.
 
 ## Health data
 
@@ -37,6 +47,13 @@ Do not commit or publish:
 
 The repository intentionally ignores common secret and build-output paths. Runtime secrets should stay in environment variables, Cloudflare secrets, Android Keystore-backed storage, or another operator-controlled secret store.
 
+Two things are easy to leak by accident:
+
+- **A built watch RPK contains your relay ingest token**, compiled in from
+  `watch/src/config.js`. Never publish or share one.
+- **A remote MCP URL is the credential.** The unguessable path is the whole
+  authentication story, so a screenshot of it is a leaked password.
+
 ## Public bug reports and verification evidence
 
 Do not attach raw health databases, complete logcat dumps, screenshots containing health values, or real daily summaries to public issues.
@@ -54,6 +71,11 @@ Synthetic fixtures are preferred for automated tests. Real-device verification c
 ## ADB and device permissions
 
 Some vivo firmware may expose owner-controlled diagnostic or provider access only after an explicit ADB setup step. Such behavior is device- and firmware-specific. Do not assume it works on another phone, and do not package privileged permission changes as a silent fallback. If a required permission is absent, report that state explicitly.
+
+The grant in this repository widens what one app on your own phone may read about you. It
+is reversible (`-Revoke`), scoped to Akari Pulse alone, and changes nothing about vivo
+Health itself — but it is still a real expansion of access, so make it deliberately and
+revoke it when you stop using the app.
 
 ## Third-party AI clients
 
