@@ -7,7 +7,7 @@ import test from "node:test";
 import { createHealthService } from "../src/app.js";
 import { HealthDatabase } from "../src/database.js";
 
-async function withService(run) {
+async function withService(run, { now = "2026-08-15T03:00:00Z" } = {}) {
   const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "akari-daily-summary-test-"));
   const service = createHealthService(
     {
@@ -17,7 +17,7 @@ async function withService(run) {
       databasePath: path.join(temporaryDirectory, "health.sqlite"),
       maxBodyBytes: 1024 * 1024,
     },
-    { now: () => Date.parse("2026-08-15T03:00:00Z") },
+    { now: () => Date.parse(now) },
   );
   const address = await service.listen();
   const baseUrl = `http://127.0.0.1:${address.port}`;
@@ -148,7 +148,18 @@ test("phone daily summaries replace by source day, never sum, and remain beside 
     const today = await request(
       "/v1/health/today?date=2026-08-14&timezone_offset_minutes=480&metrics=step_count,step_count_sensor,phone_step_count,phone_distance,phone_calories",
     );
-    assert.equal(today.body.status, "PASS");
+    // The newest phone read in this fixture is 32 hours before the injected now,
+    // so the phone source is past stale_after_ms: the data is returned in full,
+    // and the response says it is not current instead of calling it PASS.
+    assert.equal(today.body.status, "DEGRADED");
+    assert.deepEqual(today.body.data.freshness.stale_sources, ["vivo_phone"]);
+    assert.equal(today.body.data.freshness.by_source.WA2456C.state, "FRESH");
+    assert.equal(
+      today.body.data.freshness.data_as_of_by_metric.phone_step_count,
+      Date.parse("2026-08-14T03:00:00+08:00"),
+    );
+    assert.equal(today.body.data.timezone, null);
+    assert.equal(today.body.data.timezone_source, "caller_override");
     assert.equal(today.body.data.daily_summaries.vivo_phone.phone_step_count.value, 3200);
     assert.equal(today.body.data.daily_summaries.vivo_phone.phone_step_count.source_day, "2026-08-14");
     assert.equal(today.body.data.daily_summaries.vivo_phone.phone_step_count.source_timezone, "Asia/Shanghai");
@@ -178,6 +189,43 @@ test("phone daily summaries replace by source day, never sum, and remain beside 
     assert.equal(crossTimezone.body.data.steps.phone.source_day, "2026-08-15");
     assert.equal(crossTimezone.body.data.steps.phone.sampled_at, "2026-08-15T00:01:00+08:00");
   });
+});
+
+// 2026-08-14T15:30:00Z is 23:30 on the 14th in Asia/Shanghai and 00:30 on the
+// 15th in JST: the hour where a client-side default silently moves a Chinese
+// health day. The provider decided the day in +08, so that is what an undated
+// read must use, whatever zone the caller runs in.
+test("an undated calendar read buckets on the provider's zone, not the client's", async () => {
+  await withService(async ({ request }) => {
+    const ingest = await request("/v1/health/daily-summaries", {
+      method: "POST",
+      body: JSON.stringify(phoneBatch({
+        batchId: "phone-late-evening",
+        sourceDay: "2026-08-14",
+        sampledAt: "2026-08-14T23:20:00+08:00",
+        steps: 8123,
+        distance: 6100,
+        calories: 240,
+      })),
+    });
+    assert.equal(ingest.response.status, 202);
+
+    const provided = await request("/v1/health/today?metrics=phone_step_count");
+    assert.equal(provided.body.data.date, "2026-08-14");
+    assert.equal(provided.body.data.timezone, "Asia/Shanghai");
+    assert.equal(provided.body.data.timezone_offset_minutes, 480);
+    assert.equal(provided.body.data.timezone_source, "provider_default");
+    assert.equal(provided.body.status, "PASS");
+    assert.equal(provided.body.data.daily_summaries.vivo_phone.phone_step_count.value, 8123);
+
+    // The old default put the same moment on the next day, where the value the
+    // provider recorded does not exist.
+    const jst = await request("/v1/health/today?timezone_offset_minutes=540&metrics=phone_step_count");
+    assert.equal(jst.body.data.date, "2026-08-15");
+    assert.equal(jst.body.data.timezone_source, "caller_override");
+    assert.equal(jst.body.status, "NO_DATA");
+    assert.deepEqual(jst.body.data.daily_summaries, {});
+  }, { now: "2026-08-14T15:30:00Z" });
 });
 
 test("NO_DATA and ERROR stay distinct and never acquire a value", async () => {

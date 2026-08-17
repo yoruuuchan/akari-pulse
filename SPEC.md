@@ -64,12 +64,12 @@ All flows are conversational and return compact text plus structured JSON. None 
 Tools:
 
 - `health_latest`: latest successful observation for one metric, or latest observations for all known metrics.
-- `health_today`: bounded summaries for a local calendar day and explicit UTC offset.
+- `health_today`: bounded summaries for a calendar day, defaulting to the vivo provider's own zone (Asia/Shanghai, +480) unless an explicit UTC offset is given.
 - `health_heart_rate`: latest heart-rate observation, optionally nearest a timestamp.
 - `health_heart_rate_range`: bounded raw heart-rate observations in a time range.
 - `health_steps`: latest or daily step total.
-- `health_sleep`: sleep status, units, and stages for a time range.
-- `health_activity`: distance, calories, intensity, energy, standing, speed, and walking observations.
+- `health_sleep`: watch sleep status, units, and stages for a time range, beside the phone sleep sessions whose real sleep interval overlaps it.
+- `health_activity`: watch distance, calories, intensity, energy, standing, speed, and walking observations beside the phone daily summaries for that calendar day.
 - `health_spo2`: bounded blood-oxygen observations.
 - `health_stress`: bounded stress observations.
 

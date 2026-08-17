@@ -301,9 +301,9 @@ MCP 暴露 14 个窄工具，每个读工具都标注了 `readOnlyHint`。完整
 | 手表健康链路 | 每次启动只跑一项测试的测试框架 | `PASS` —— `getRecentSamples([HEART_RATE])` → 回调 → 解析 → UI → 队列 → 快照 → 存储稳定；没有新的失败证据不要重做 |
 | 官方 BlueXlink RPC | 公开手表 API 与官方 Android AAR 均已集成 | **已关闭**：`transport init` 报 `code=1001 interconnectfeature error`；官方支持表只列 WATCH 3；vivo `appid`/`encryStr` 无法获取——见 [RESEARCH.md](docs/RESEARCH.md) |
 | Cloudflare 中转 | 严格分离手表事件、手机日汇总、手机睡眠汇总三条入库路由；重放/冲突/鉴权测试 5/5 通过 | `PASS` —— 2026-08-12 真机手表 HTTPS；2026-08-14 真机手机日汇总使用独立手机 secret；当天稍后真机手机事件与睡眠汇总批次同样排空到 0 待处理行 |
-| Akari Health 服务 | 手表事件鉴权路由、幂等日汇总与睡眠汇总路由均以临时数据库测试，17/17 通过 | `PASS` —— schema 2 -> 3 迁移后既有手表记录原样保留；同一晚多次读取只收敛成该 source_day 的一条当前行 |
-| Akari Health MCP | 官方 SDK 客户端可列出并调用全部 14 个工具，端到端 2/2 | `PASS` —— `health_sleep`、`health_heart_rate`、`health_spo2`、`health_stress` 均并列返回手机/手表，不合并、不设优先级；`health_today`/`health_steps`/`health_latest` 行为不变 |
-| 常驻 VPS + 远程 MCP | 部署于一台东京 VPS（systemd：服务、2 分钟排水定时器、Streamable-HTTP MCP、Cloudflare Tunnel） | `PASS` —— 2026-08-12 完成公网远程手表验证；2026-08-14 私有 Provider 接入后再验生产 MCP：backend ingest PASS、MCP query PASS；见 [deploy/tokyo](deploy/tokyo/README.md) |
+| Akari Health 服务 | 手表事件鉴权路由、幂等日汇总与睡眠汇总路由均以临时数据库测试，20/20 通过 | `PASS` —— schema 2 -> 3 迁移后既有手表记录原样保留；同一晚多次读取只收敛成该 source_day 的一条当前行 |
+| Akari Health MCP | 官方 SDK 客户端可列出并调用全部 14 个工具，端到端 3/3 | `PASS` —— `health_sleep`、`health_heart_rate`、`health_spo2`、`health_stress` 均并列返回手机/手表，不合并、不设优先级；记录按时间倒序并给出 `latest`/`latest_by_source`，睡眠窗口按睡眠区间重叠过滤，`health_activity` 会返回手机日汇总，某个来源停止上报时状态为 `DEGRADED` 并附带数据年龄，而不是静默 `PASS` |
+| 常驻 VPS + 远程 MCP | 部署于一台东京 VPS（systemd：服务、2 分钟排水定时器、Streamable-HTTP MCP、Cloudflare Tunnel） | `PASS` —— 2026-08-12 完成公网远程手表验证；2026-08-14 私有 Provider 接入后再验生产 MCP：backend ingest PASS、MCP query PASS；2026-08-17 查询层修复后再次以公网连接器 URL 对线上库复验；见 [deploy/tokyo](deploy/tokyo/README.md) |
 | Android 应用 | 调试 APK 已构建、35 项单测、lint，并验证 Room 1 -> 2 与 2 -> 3 迁移 | `PASS` 2026-08-14 —— vivo 原地升级保留数据，多次真实 provider 读取，真机迁移测试 `OK (2 tests)`；今日活动、睡眠、最新体征三类读取均与 vivo 健康 UI 对照通过；公开仓库刻意不保留作者的真实健康数值 |
 | vivo 私有健康 Provider | reader 单测只用合成 cursor 与合成 payload | `PASS` 2026-08-14，机型 vivo X200 Pro（`V2405A` / `PD2405`，Android 15），**且必须先有机主一次性 ADB 授权** —— 38 列睡眠 cursor 全部按列名读取，三条 provider 恒等式精确成立，中途醒来次数与 UI 一致；撤销授权后正确报 `NOT_GRANTED` 且所有值为 null，没有任何缓存兜底。其它机型 / 固件未验证 |
 

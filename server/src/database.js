@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { HttpError, SLEEP_DURATION_KEYS } from "./validation.js";
+import { HttpError, SLEEP_DURATION_KEYS, SOURCE_STALE_AFTER_MS } from "./validation.js";
 
 const DIAGNOSTIC_LAYERS = [
   "watch_module_api",
@@ -88,6 +88,7 @@ function toDailySummary(row) {
     ...(row.value_json === null ? {} : { value: parseJson(row.value_json) }),
     unit: row.unit,
     sampled_at: row.sampled_at,
+    sampled_at_ms: row.sampled_at_ms,
     source_timestamp_available: Boolean(row.source_timestamp_available),
     status: row.status,
     outcome: row.outcome,
@@ -123,6 +124,7 @@ function toSleepSummary(row) {
     sleep_start: row.sleep_start_ms,
     sleep_end: row.sleep_end_ms,
     sampled_at: row.sampled_at,
+    sampled_at_ms: row.sampled_at_ms,
     status: row.status,
     outcome: row.outcome,
     verification: row.verification,
@@ -935,28 +937,42 @@ export class HealthDatabase {
     };
   }
 
-  sleepSummaries({ sourceDay = null, limit = 7 } = {}) {
-    // limit counts distinct sleep days, not rows: a returned day carries every
-    // session it has (the night sleep and any naps), in sleep_start order.
-    const rows = sourceDay
-      ? this.db
-          .prepare(`
-            SELECT * FROM sleep_summaries
-            WHERE source_day = ?
-            ORDER BY source ASC, sleep_start_ms ASC
-          `)
-          .all(sourceDay)
-      : this.db
-          .prepare(`
-            SELECT * FROM sleep_summaries
-            WHERE source_day IN (
-              SELECT DISTINCT source_day FROM sleep_summaries
-              ORDER BY source_day DESC
-              LIMIT ?
-            )
-            ORDER BY source_day DESC, source ASC, sleep_start_ms ASC
-          `)
-          .all(limit);
+  // limit counts distinct sleep days, not rows: a returned day carries every
+  // session it has (the night sleep and any naps), in sleep_start order.
+  //
+  // from/to bound the query by the session's real sleep interval — a session is
+  // returned only when [sleep_start, sleep_end] overlaps [from, to]. A window
+  // holding no sleep returns nothing; a night that ended before the window
+  // opened is outside it, not "recent enough to include anyway".
+  sleepSummaries({ sourceDay = null, from = null, to = null, limit = 7 } = {}) {
+    const clauses = [];
+    const parameters = [];
+    if (sourceDay) {
+      clauses.push("source_day = ?");
+      parameters.push(sourceDay);
+    }
+    if (from !== null) {
+      clauses.push("sleep_end_ms >= ?");
+      parameters.push(from);
+    }
+    if (to !== null) {
+      clauses.push("sleep_start_ms <= ?");
+      parameters.push(to);
+    }
+    const filter = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM sleep_summaries
+        ${filter}
+        ${clauses.length > 0 ? "AND" : "WHERE"} source_day IN (
+          SELECT DISTINCT source_day FROM sleep_summaries
+          ${filter}
+          ORDER BY source_day DESC
+          LIMIT ?
+        )
+        ORDER BY source_day DESC, source ASC, sleep_start_ms ASC
+      `)
+      .all(...parameters, ...parameters, limit);
     return rows.map(toSleepSummary);
   }
 
@@ -1027,6 +1043,10 @@ export class HealthDatabase {
       parameters.push(...BPM_ZERO_INVALID_METRIC_LIST);
     }
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    // Newest observation first, so records[0] is genuinely the latest reading.
+    // Ordering by metric name instead would have put an alphabetically earlier
+    // metric — a watch sample days old — ahead of a phone sample from this
+    // morning, and made callers guess a source precedence that does not exist.
     const rows = this.db
       .prepare(`
         SELECT * FROM (
@@ -1039,10 +1059,49 @@ export class HealthDatabase {
           ${where}
         )
         WHERE row_number = 1
-        ORDER BY metric ASC
+        ORDER BY timestamp_ms DESC, received_at_ms DESC, metric ASC
       `)
       .all(...parameters);
     return rows.map(toHealthRecord);
+  }
+
+  // Newest observation each source has produced, across raw records, phone daily
+  // summaries and phone sleep sessions. A summary's observation time is the
+  // provider read that produced it (sampled_at); a raw record's is its own
+  // timestamp. Reaching the database says nothing about whether a source is
+  // still reporting, so this is what tells the two apart.
+  sourceFreshness(now = Date.now()) {
+    const bpmPlaceholders = BPM_ZERO_INVALID_METRIC_LIST.map(() => "?").join(",");
+    const rows = this.db
+      .prepare(`
+        SELECT source, MAX(observed_at) AS observed_at, MAX(received_at) AS received_at
+        FROM (
+          SELECT source_device AS source, timestamp_ms AS observed_at, received_at_ms AS received_at
+          FROM health_records
+          WHERE status = 'PASS'
+            AND NOT (metric IN (${bpmPlaceholders}) AND numeric_value = 0)
+          UNION ALL
+          SELECT source, sampled_at_ms AS observed_at, received_at_ms AS received_at
+          FROM daily_summaries WHERE status = 'PASS'
+          UNION ALL
+          SELECT source, sampled_at_ms AS observed_at, received_at_ms AS received_at
+          FROM sleep_summaries
+        )
+        GROUP BY source
+        ORDER BY source ASC
+      `)
+      .all(...BPM_ZERO_INVALID_METRIC_LIST);
+    const bySource = {};
+    for (const row of rows) {
+      const age = Math.max(0, now - row.observed_at);
+      bySource[row.source] = {
+        source_latest_at: row.observed_at,
+        source_age_ms: age,
+        source_received_at: row.received_at,
+        state: age > SOURCE_STALE_AFTER_MS ? "STALE" : "FRESH",
+      };
+    }
+    return bySource;
   }
 
   status(now = Date.now()) {
@@ -1112,6 +1171,17 @@ export class HealthDatabase {
       ? { status: "PASS", timestamp: lastBatch.received_at_ms, batch_id: lastBatch.batch_id }
       : { status: "NO_DATA", timestamp: null };
     layers.database = { status: "PASS", timestamp: now };
+    // A layer's status describes the last time it ran, not the present. Age
+    // travels with it so a PASS recorded days ago cannot read as a live PASS.
+    for (const layer of Object.values(layers)) {
+      if (layer.timestamp === null || layer.timestamp === undefined) continue;
+      layer.age_ms = Math.max(0, now - layer.timestamp);
+      layer.state = layer.age_ms > SOURCE_STALE_AFTER_MS ? "STALE" : "FRESH";
+    }
+
+    const bySource = this.sourceFreshness(now);
+    const sourceEntries = Object.entries(bySource);
+    const observedTimes = sourceEntries.map(([, source]) => source.source_latest_at);
 
     return {
       database: {
@@ -1155,6 +1225,15 @@ export class HealthDatabase {
           }
         : null,
       metric_freshness: metricFreshness,
+      freshness: {
+        data_as_of: observedTimes.length > 0 ? Math.max(...observedTimes) : null,
+        stale_after_ms: SOURCE_STALE_AFTER_MS,
+        by_source: bySource,
+        fresh_sources: sourceEntries.filter(([, s]) => s.state === "FRESH").map(([name]) => name),
+        stale_sources: sourceEntries.filter(([, s]) => s.state === "STALE").map(([name]) => name),
+        semantics:
+          "generated_at is when this response was built; data_as_of is the newest health observation behind it; received_at is when the backend took that observation in. A source is STALE once its newest observation is older than stale_after_ms. A reachable database and a successful query do not make its data fresh.",
+      },
       layers,
     };
   }

@@ -46,6 +46,21 @@ export const PHONE_DAILY_METRICS = new Map([
   ["phone_distance", "m"],
   ["phone_calories", "kcal"],
 ]);
+
+// Every vivo daily summary and sleep session carries source_timezone
+// "Asia/Shanghai": the provider decided which calendar day a value belongs to,
+// in that zone. Calendar reads therefore default to the provider's zone, not to
+// wherever the MCP client happens to run — a client in JST or behind a VPN must
+// not silently shift a Chinese health day across midnight. Asia/Shanghai has no
+// DST, so the fixed offset is exact. Callers may still pass an explicit
+// timezone_offset_minutes override.
+export const HEALTH_CALENDAR_TIMEZONE = "Asia/Shanghai";
+export const HEALTH_CALENDAR_OFFSET_MINUTES = 480;
+
+// A source counts as stale once its newest observation is older than this. It is
+// reported next to every freshness block so the rule is legible to callers
+// rather than hidden in the server.
+export const SOURCE_STALE_AFTER_MS = 86400000;
 const PHONE_DAILY_STATUSES = new Set(["PASS", "NO_DATA", "ERROR"]);
 const PHONE_DAILY_OUTCOMES_BY_STATUS = new Map([
   ["PASS", new Set(["PROVIDER_CALL_SUCCEEDED"])],

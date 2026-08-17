@@ -303,6 +303,17 @@ These results do not prove compatibility with:
 
 A host build, emulator run, successful `/healthz`, or transport callback must never be promoted to a device capability `PASS` without physical-device evidence.
 
+### 2026-08-17 query-layer verification
+
+Re-verified against the production Streamable HTTP MCP after the query/aggregation fixes, with a real MCP client over the deployed endpoint and the live store. The Android, provider, and ingest path was untouched; the phone provider reported normally throughout, while the watch relay had been silent since 2026-08-12.
+
+- `health_activity` returns the phone daily summaries for the requested day — steps, distance and calories, each with `source`, `source_day`, `source_timezone`, `sampled_at` and `verification` — under `PASS`. It previously answered `NO_DATA` with an empty `daily_summaries` on days `health_today` returned the same values, because it asked the calendar route for watch metrics only;
+- `health_activity` with no arguments resolves the day in the provider's zone and reports `timezone: Asia/Shanghai`, `timezone_offset_minutes: 480`, `timezone_source: provider_default`;
+- `health_sleep` over a midday hour with no nap returns an empty `phone_sleep.summaries`; the same call over the night window returns exactly the night session. Phone sessions are selected by overlap with the requested interval, not by "most recent day stored";
+- `health_heart_rate`, `health_spo2`, and `health_stress` return records newest first with `latest` and `latest_by_source` naming the newest observation, so the live phone reading is not outranked by a watch sample from five days earlier;
+- those three, `health_latest`, and `health_status` report `DEGRADED` with `stale_sources: ["WA2456C"]` while the phone source stays `FRESH`. Both sources' values are still returned in full with their own timestamps and ages;
+- `health_status` separates `generated_at`, `data_as_of` and `received_at`, and puts an `age_ms` and `state` on each diagnostic layer, so the watch layers' `PASS` from 2026-08-12 reads as stale rather than live.
+
 ## Public evidence policy
 
 Future updates to this document should preserve enough information to reproduce the capability result while keeping personal health data private. See [../PRIVACY.md](../PRIVACY.md) and [../CONTRIBUTING.md](../CONTRIBUTING.md).

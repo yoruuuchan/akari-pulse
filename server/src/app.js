@@ -2,9 +2,12 @@ import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { HealthDatabase } from "./database.js";
 import {
+  HEALTH_CALENDAR_OFFSET_MINUTES,
+  HEALTH_CALENDAR_TIMEZONE,
   HEALTH_STATUSES,
   HttpError,
   PHONE_DAILY_METRICS,
+  SOURCE_STALE_AFTER_MS,
   parseCorrelationEvent,
   parseHealthBatch,
   parseIntegerQuery,
@@ -66,6 +69,72 @@ async function readJson(request, maxBytes, { allowEmpty = false } = {}) {
   } catch {
     throw new HttpError(400, "INVALID_JSON", "Request body is not valid JSON");
   }
+}
+
+// Three different clocks get confused with each other constantly, so every read
+// carries all three apart: generated_at (when this response was built) stays on
+// the envelope, while data_as_of (when the returned values were observed) and
+// received_at (when the backend took them in) live here. Observations are
+// {metric, source, observed_at, received_at}: for a raw record observed_at is
+// its own timestamp, for a phone summary it is the provider read that produced
+// the value. by_source additionally carries how fresh that source is overall —
+// a deliberately historical query returns old rows from a perfectly live source,
+// which is not the same thing as a source that stopped reporting.
+function buildFreshness(observations, sourceFreshness, now) {
+  const observedTimes = observations.map((o) => o.observed_at).filter((t) => typeof t === "number");
+  const receivedTimes = observations.map((o) => o.received_at).filter((t) => typeof t === "number");
+  const byMetric = {};
+  const bySource = {};
+  for (const observation of observations) {
+    if (typeof observation.observed_at !== "number") continue;
+    if (!(observation.metric in byMetric) || observation.observed_at > byMetric[observation.metric]) {
+      byMetric[observation.metric] = observation.observed_at;
+    }
+    const source = bySource[observation.source] ?? (bySource[observation.source] = {
+      data_as_of: null,
+      received_at: null,
+      age_ms: null,
+      ...(sourceFreshness[observation.source] ?? { source_latest_at: null, source_age_ms: null, state: "UNKNOWN" }),
+    });
+    if (source.data_as_of === null || observation.observed_at > source.data_as_of) {
+      source.data_as_of = observation.observed_at;
+      source.age_ms = Math.max(0, now - observation.observed_at);
+    }
+    if (typeof observation.received_at === "number" && (source.received_at === null || observation.received_at > source.received_at)) {
+      source.received_at = observation.received_at;
+    }
+  }
+  const staleSources = Object.entries(bySource)
+    .filter(([, source]) => source.state === "STALE")
+    .map(([name]) => name);
+  return {
+    data_as_of: observedTimes.length > 0 ? Math.max(...observedTimes) : null,
+    received_at: receivedTimes.length > 0 ? Math.max(...receivedTimes) : null,
+    data_as_of_by_metric: byMetric,
+    by_source: bySource,
+    stale_sources: staleSources,
+    stale_after_ms: SOURCE_STALE_AFTER_MS,
+    semantics:
+      "data_as_of is the newest observation in this response; age_ms is how old that value is now. source_latest_at/source_age_ms/state describe the source itself, whatever window was asked for. A source is STALE once its newest observation is older than stale_after_ms; status is DEGRADED while any returned source is stale.",
+  };
+}
+
+// PASS only when everything returned comes from a source that is still
+// reporting. Data from a source that went quiet days ago is still returned —
+// with its real timestamps — but the response says so instead of presenting it
+// as a current reading.
+function freshnessStatus(freshness, hasData) {
+  if (!hasData) return "NO_DATA";
+  return freshness.stale_sources.length > 0 ? "DEGRADED" : "PASS";
+}
+
+function recordObservations(records) {
+  return records.map((record) => ({
+    metric: record.metric,
+    source: record.source_device,
+    observed_at: record.timestamp,
+    received_at: record.received_at,
+  }));
 }
 
 function dateBounds(date, offsetMinutes, now = Date.now()) {
@@ -226,11 +295,12 @@ export function createHealthService(config, { now = () => Date.now() } = {}) {
       }
 
       if (request.method === "GET" && requestUrl.pathname === "/v1/status") {
+        const status = database.status(now());
         sendJson(response, 200, {
           ok: true,
-          status: "PASS",
+          status: status.freshness.stale_sources.length > 0 ? "DEGRADED" : "PASS",
           generated_at: now(),
-          data: database.status(now()),
+          data: status,
         });
         return;
       }
@@ -281,16 +351,32 @@ export function createHealthService(config, { now = () => Date.now() } = {}) {
           max: 60,
           defaultValue: 7,
         });
-        const summaries = database.sleepSummaries({ sourceDay, limit });
+        const from = parseIntegerQuery(requestUrl.searchParams.get("from"), "from", { defaultValue: null });
+        const to = parseIntegerQuery(requestUrl.searchParams.get("to"), "to", { defaultValue: null });
+        if (from !== null && to !== null && from > to) {
+          throw new HttpError(400, "INVALID_QUERY", "from cannot be after to");
+        }
+        const summaries = database.sleepSummaries({ sourceDay, from, to, limit });
+        const freshness = buildFreshness(
+          summaries.map((summary) => ({
+            metric: "phone_sleep",
+            source: summary.source,
+            observed_at: summary.sampled_at_ms,
+            received_at: summary.received_at,
+          })),
+          database.sourceFreshness(now()),
+          now(),
+        );
         sendJson(response, 200, {
           ok: true,
-          status: summaries.length > 0 ? "PASS" : "NO_DATA",
+          status: freshnessStatus(freshness, summaries.length > 0),
           generated_at: now(),
           data: {
             summaries,
-            query: { source_day: sourceDay, limit },
+            query: { source_day: sourceDay, from, to, limit },
+            freshness,
             semantics:
-              "one row per observed sleep session, keyed by source, source_day, sleep_start: a day holds its night sleep and any naps side by side; source_day is the local calendar day the wake-up time falls in, taken from the vivo provider and never re-bucketed; limit counts distinct sleep days",
+              "one row per observed sleep session, keyed by source, source_day, sleep_start: a day holds its night sleep and any naps side by side; source_day is the local calendar day the wake-up time falls in, taken from the vivo provider and never re-bucketed; limit counts distinct sleep days; from/to select sessions whose real [sleep_start, sleep_end] interval overlaps the window, so a window containing no sleep returns none",
           },
         });
         return;
@@ -304,11 +390,26 @@ export function createHealthService(config, { now = () => Date.now() } = {}) {
           throw new HttpError(400, "INVALID_QUERY", "status is not supported");
         }
         const records = database.latest({ metrics, status });
+        // records is newest-first, so the first row seen for a source is that
+        // source's latest. `latest` is the newest observation overall: callers
+        // read it instead of guessing a precedence out of records[0].
+        const latestBySource = {};
+        for (const record of records) {
+          if (!(record.source_device in latestBySource)) latestBySource[record.source_device] = record;
+        }
+        const freshness = buildFreshness(recordObservations(records), database.sourceFreshness(now()), now());
         sendJson(response, 200, {
           ok: true,
-          status: records.length > 0 ? "PASS" : "NO_DATA",
+          status: freshnessStatus(freshness, records.length > 0),
           generated_at: now(),
-          data: { records },
+          data: {
+            records,
+            latest: records[0] ?? null,
+            latest_by_source: latestBySource,
+            ordering:
+              "records are sorted by observation timestamp, newest first, one row per metric; no source outranks another",
+            freshness,
+          },
         });
         return;
       }
@@ -316,17 +417,19 @@ export function createHealthService(config, { now = () => Date.now() } = {}) {
       if (request.method === "GET" && requestUrl.pathname === "/v1/health/range") {
         const query = parseRangeQuery(requestUrl);
         const records = database.queryRange(query);
+        const freshness = buildFreshness(recordObservations(records), database.sourceFreshness(now()), now());
         sendJson(response, 200, {
           ok: true,
-          status: records.length > 0 ? "PASS" : "NO_DATA",
+          status: freshnessStatus(freshness, records.length > 0),
           generated_at: now(),
-          data: { records, query },
+          data: { records, query, freshness },
         });
         return;
       }
 
       if (request.method === "GET" && requestUrl.pathname === "/v1/health/today") {
-        const rawOffset = requestUrl.searchParams.get("timezone_offset_minutes") ?? "540";
+        const offsetOverride = requestUrl.searchParams.get("timezone_offset_minutes");
+        const rawOffset = offsetOverride ?? String(HEALTH_CALENDAR_OFFSET_MINUTES);
         if (!/^[+-]?\d+$/.test(rawOffset)) {
           throw new HttpError(400, "INVALID_QUERY", "timezone_offset_minutes must be an integer");
         }
@@ -358,18 +461,37 @@ export function createHealthService(config, { now = () => Date.now() } = {}) {
           : [];
         const metricSummaries = summarizeRecords(records);
         const dailySummaries = groupDailySummaries(dailySummaryRecords);
+        const freshness = buildFreshness(
+          [
+            ...recordObservations(records),
+            ...dailySummaryRecords.map((summary) => ({
+              metric: summary.metric,
+              source: summary.source,
+              observed_at: summary.sampled_at_ms,
+              received_at: summary.received_at,
+            })),
+          ],
+          database.sourceFreshness(now()),
+          now(),
+        );
+        const status = todayStatus(records, dailySummaryRecords);
         sendJson(response, 200, {
           ok: true,
-          status: todayStatus(records, dailySummaryRecords),
+          status: status === "PASS" ? freshnessStatus(freshness, true) : status,
           generated_at: now(),
           data: {
             date: bounds.date,
             timezone_offset_minutes: signedOffset,
+            timezone: offsetOverride === null ? HEALTH_CALENDAR_TIMEZONE : null,
+            timezone_source: offsetOverride === null ? "provider_default" : "caller_override",
+            timezone_semantics:
+              `calendar days default to the vivo provider's own zone (${HEALTH_CALENDAR_TIMEZONE}, UTC+${HEALTH_CALENDAR_OFFSET_MINUTES / 60}), the zone its summaries are stamped with — never the MCP client's local zone`,
             from: bounds.start,
             to: bounds.end,
             metrics: metricSummaries,
             daily_summaries: dailySummaries,
             steps: buildStepSources(metricSummaries, dailySummaries, bounds.date),
+            freshness,
           },
         });
         return;

@@ -7,7 +7,10 @@ const timeInput = z.union([
   z.number().int().nonnegative(),
   z.string().min(1).describe("ISO-8601 timestamp, including an offset when not UTC"),
 ]);
-const statusSchema = z.enum(["PASS", "NO_DATA", "DENIED", "UNSUPPORTED", "API_MISSING", "ERROR"]);
+// DEGRADED: the read succeeded and the data is returned, but at least one source
+// behind it stopped reporting. Reaching the database is not the same as the
+// health data being current, and the two must not collapse into one PASS.
+const statusSchema = z.enum(["PASS", "DEGRADED", "NO_DATA", "DENIED", "UNSUPPORTED", "API_MISSING", "ERROR"]);
 const outputSchema = z.object({
   ok: z.boolean(),
   status: statusSchema,
@@ -22,6 +25,26 @@ const readAnnotations = {
 };
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+// The vivo provider stamps every daily summary with source_timezone
+// "Asia/Shanghai" and decides in that zone which calendar day a value belongs
+// to. Calendar tools therefore default to +480 rather than to wherever the
+// client runs, so the same date means the same health day from any machine,
+// VPN or not. Callers can still override it explicitly.
+const CALENDAR_TIMEZONE = "Asia/Shanghai";
+const CALENDAR_OFFSET_MINUTES = 480;
+// Left optional rather than defaulted here: when it is omitted the backend
+// applies the provider zone itself, so there is one authority for the default
+// and the response can say whether the caller overrode it.
+const calendarOffset = z
+  .number()
+  .int()
+  .min(-720)
+  .max(840)
+  .optional()
+  .describe(
+    `Calendar-day offset in minutes. Omit it and the vivo provider's own zone is used (${CALENDAR_TIMEZONE}, +${CALENDAR_OFFSET_MINUTES}) — never the client's local zone.`,
+  );
 
 function asEpoch(value, name) {
   if (typeof value === "number") return value;
@@ -62,14 +85,11 @@ function toolFailure(error) {
 }
 
 function summarizeLatest(payload, metric = null) {
-  const records = payload.data.records;
+  const { records, freshness } = payload.data;
   if (records.length === 0) return `no ${metric || "health"} observations are available`;
-  if (records.length === 1) {
-    const record = records[0];
-    const value = Object.hasOwn(record, "value") ? JSON.stringify(record.value) : record.status;
-    return `${record.metric}: ${value}${record.unit ? ` ${record.unit}` : ""} · ${new Date(record.timestamp).toISOString()} · ${record.source_device}`;
-  }
-  return `${records.length} latest health metrics returned`;
+  if (records.length === 1) return describeRecord(records[0], records[0].metric, freshness);
+  const stale = freshness.stale_sources.length > 0 ? ` · stale sources: ${freshness.stale_sources.join(", ")}` : "";
+  return `${records.length} latest health metrics returned, newest first${stale}`;
 }
 
 function summarizeStepSources(payload) {
@@ -87,6 +107,8 @@ function summarizeStepSources(payload) {
     parts.push(`phone: ${steps.phone.status} (${steps.phone.source_day}, sampled ${steps.phone.sampled_at})`);
   }
   if (parts.length === 0) parts.push(`no step observations are available for ${payload.data.date}`);
+  const stale = payload.data.freshness.stale_sources;
+  if (stale.length > 0) parts.push(`stale sources: ${stale.join(", ")}`);
   return `${parts.join(" · ")} · sources are returned side by side; no merge or precedence`;
 }
 
@@ -127,7 +149,7 @@ function summarizePhoneSleepSession(summary) {
 // Summarizes every stored session of the most recent returned day — the night
 // sleep and any naps are separate rows and all of them belong in the answer.
 function summarizePhoneSleep(summaries) {
-  if (!summaries || summaries.length === 0) return "phone: no vivo sleep day stored";
+  if (!summaries || summaries.length === 0) return "phone: no vivo sleep session in the requested scope";
   const day = summaries[0].source_day;
   return summaries
     .filter((summary) => summary.source_day === day)
@@ -135,19 +157,56 @@ function summarizePhoneSleep(summaries) {
     .join(" | ");
 }
 
+function formatAge(ageMs) {
+  if (!Number.isFinite(ageMs)) return "unknown age";
+  const hours = ageMs / 3600000;
+  if (hours < 1) return `${Math.round(ageMs / 60000)}m old`;
+  if (hours < 48) return `${Math.round(hours)}h old`;
+  return `${Math.round(hours / 24)}d old`;
+}
+
+function describeRecord(record, label, freshness) {
+  if (!record) return `${label}: no observation`;
+  const value = Object.hasOwn(record, "value") ? JSON.stringify(record.value) : record.status;
+  const source = freshness?.by_source?.[record.source_device];
+  const age = source ? ` · ${formatAge(source.age_ms)}` : "";
+  const stale = source?.state === "STALE" ? " · STALE SOURCE, not a current reading" : "";
+  return `${label} (${record.source_device}): ${value}${record.unit ? ` ${record.unit}` : ""} · ${new Date(record.timestamp).toISOString()}${age}${stale}`;
+}
+
+// Names the genuinely newest observation first, then each source's own latest.
+// Without this the caller has to infer a precedence from record order, which is
+// how a five-day-old watch sample got read as the current heart rate.
 function summarizeSideBySide(payload, watchMetric, phoneMetric) {
-  const records = payload.data.records;
-  const describe = (metric, label) => {
-    const record = records.find((candidate) => candidate.metric === metric);
-    if (!record) return `${label}: no observation`;
-    const value = Object.hasOwn(record, "value") ? JSON.stringify(record.value) : record.status;
-    return `${label} (${record.source_device}): ${value}${record.unit ? ` ${record.unit}` : ""} · ${new Date(record.timestamp).toISOString()}`;
-  };
+  const { records, latest, freshness } = payload.data;
+  const newest = latest ?? records[0] ?? null;
   return [
-    describe(watchMetric, "watch"),
-    describe(phoneMetric, "phone"),
-    "sources are returned side by side; no merge or precedence",
+    newest
+      ? describeRecord(newest, `latest ${newest.metric}`, freshness)
+      : `no ${watchMetric} observation is available from any source`,
+    describeRecord(records.find((record) => record.metric === watchMetric), "watch", freshness),
+    describeRecord(records.find((record) => record.metric === phoneMetric), "phone", freshness),
+    "sources are returned side by side, newest first; latest / latest_by_source name the newest observation, and no source outranks another",
   ].join(" · ");
+}
+
+// Phone daily summaries keep their provenance in the summary line, not just in
+// the structured payload: a total is only meaningful together with the day it
+// belongs to, the zone that day was decided in, and when the provider was read.
+function summarizeActivity(payload) {
+  const { date, metrics, daily_summaries: dailySummaries, freshness } = payload.data;
+  const parts = [`${date}: ${Object.keys(metrics).length} watch activity metrics`];
+  for (const [source, summaries] of Object.entries(dailySummaries)) {
+    for (const summary of Object.values(summaries)) {
+      const value = Object.hasOwn(summary, "value") ? `${summary.value}${summary.unit ? ` ${summary.unit}` : ""}` : summary.status;
+      parts.push(
+        `${source} ${summary.metric}: ${value} (${summary.source_day} ${summary.source_timezone} · sampled ${summary.sampled_at} · ${summary.verification})`,
+      );
+    }
+  }
+  if (freshness.stale_sources.length > 0) parts.push(`stale sources: ${freshness.stale_sources.join(", ")}`);
+  parts.push("sources are returned side by side; no merge or precedence");
+  return parts.join(" · ");
 }
 
 function reflectRecordStatus(payload) {
@@ -182,10 +241,20 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
     async () =>
       invoke(async () => {
         const payload = await api.request("/v1/status");
-        payload.data.layers.mcp_query = { status: "PASS", timestamp: Date.now() };
+        payload.data.layers.mcp_query = { status: "PASS", timestamp: Date.now(), age_ms: 0, state: "FRESH" };
+        const { freshness } = payload.data;
+        const sources = Object.entries(freshness.by_source)
+          .map(([name, source]) => `${name} ${source.state.toLowerCase()} (${formatAge(source.source_age_ms)})`)
+          .join(", ");
         return textResult(
           payload,
-          `akari health: ${payload.status} · ${payload.data.database.record_count} records · ingest ${payload.data.layers.backend_ingest.status} · mcp query PASS`,
+          [
+            `akari health: ${payload.status} · ${payload.data.database.record_count} records · ingest ${payload.data.layers.backend_ingest.status} · mcp query PASS`,
+            `sources: ${sources || "none"}`,
+            freshness.stale_sources.length > 0
+              ? `DEGRADED: ${freshness.stale_sources.join(", ")} stopped reporting; the query path is healthy but that source's data is not current`
+              : "all known sources are reporting",
+          ].join(" · "),
         );
       }),
   );
@@ -213,7 +282,7 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
       description: "Read bounded watch metrics and phone daily summaries for a calendar date. Phone records retain their source_day and are never re-bucketed from sampled_at.",
       inputSchema: z.object({
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-        timezone_offset_minutes: z.number().int().min(-720).max(840).default(540),
+        timezone_offset_minutes: calendarOffset,
         metrics: z.array(metricName).max(32).optional(),
       }),
       outputSchema,
@@ -230,9 +299,16 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
         );
         const phoneCount = Object.values(payload.data.daily_summaries || {})
           .reduce((count, source) => count + Object.keys(source).length, 0);
+        const { freshness } = payload.data;
         return textResult(
           payload,
-          `${payload.data.date}: ${Object.keys(payload.data.metrics).length} watch metrics and ${phoneCount} phone daily summaries returned`,
+          [
+            `${payload.data.date} (${payload.data.timezone ?? `UTC${payload.data.timezone_offset_minutes >= 0 ? "+" : ""}${payload.data.timezone_offset_minutes / 60}`}, ${payload.data.timezone_source}): ${Object.keys(payload.data.metrics).length} watch metrics and ${phoneCount} phone daily summaries returned`,
+            freshness.data_as_of === null
+              ? "no observation behind this response"
+              : `data as of ${new Date(freshness.data_as_of).toISOString()}`,
+            freshness.stale_sources.length > 0 ? `stale sources: ${freshness.stale_sources.join(", ")}` : "all returned sources are reporting",
+          ].join(" · "),
         );
       }),
   );
@@ -276,7 +352,7 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
         const phoneLatest = await api.request("/v1/health/latest?metric=phone_heart_rate");
         const result = {
           ok: true,
-          status: nearest ? "PASS" : "NO_DATA",
+          status: nearest ? payload.status : "NO_DATA",
           generated_at: payload.generated_at,
           data: {
             requested_at: requestedAt,
@@ -286,12 +362,17 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
             phone_latest_snapshot: phoneLatest.data.records[0] ?? null,
             phone_latest_snapshot_semantics:
               "the vivo phone provider exposes only its newest single point; it is not a windowed sample and not a daily aggregate",
+            // The window's own freshness, kept apart from the phone snapshot's:
+            // one describes the sample nearest the requested time, the other a
+            // reading taken whenever the provider last ran.
+            freshness: payload.data.freshness,
+            phone_latest_snapshot_freshness: phoneLatest.data.freshness,
           },
         };
         return textResult(
           result,
           nearest
-            ? `heart_rate: ${nearest.value} ${nearest.unit || "bpm"} · ${Math.abs(nearest.timestamp - requestedAt)}ms from requested time`
+            ? `heart_rate: ${nearest.value} ${nearest.unit || "bpm"} · ${Math.abs(nearest.timestamp - requestedAt)}ms from requested time · ${describeRecord(phoneLatest.data.records[0] ?? null, "phone latest snapshot", phoneLatest.data.freshness)}`
             : "no heart-rate sample exists in the requested window",
         );
       }),
@@ -334,7 +415,7 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
       description: "Return watch official/sensor steps and the vivo phone daily summary side by side. Sources are never merged and neither source overrides the other.",
       inputSchema: z.object({
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-        timezone_offset_minutes: z.number().int().min(-720).max(840).default(540),
+        timezone_offset_minutes: calendarOffset,
       }),
       outputSchema,
       annotations: readAnnotations,
@@ -369,7 +450,13 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
             todayPayload.data.steps.watch.step_count_sensor.status === "PASS"
           ) {
             todayPayload.data.steps.watch.status = "PASS";
-            todayPayload.status = "PASS";
+            // The fallback reaches outside today's window, so it carries its own
+            // freshness. Its staleness propagates: a step count last seen days
+            // ago must not be handed back under a plain PASS.
+            todayPayload.data.steps.watch.freshness = legacyLatest.data.freshness;
+            if (legacyLatest.status === "DEGRADED" || todayPayload.status === "NO_DATA") {
+              todayPayload.status = legacyLatest.status;
+            }
           }
         }
         return textResult(todayPayload, summarizeStepSources(todayPayload));
@@ -381,15 +468,17 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
     {
       title: "Sleep observations",
       description:
-        "Read sleep from both sources side by side: raw watch sleep observations in a bounded time range, and vivo phone sleep sessions (fell asleep, woke up, total, deep, light, REM, wake-ups, score, deep-sleep continuity). A phone sleep day is attributed to the local calendar day of its wake-up time and can hold several sessions: the night sleep and any naps are separate rows keyed by their sleep_start, never merged and never displacing each other. No stage or duration is inferred when a source does not report it.",
+        "Read sleep from both sources side by side: raw watch sleep observations in a bounded time range, and vivo phone sleep sessions (fell asleep, woke up, total, deep, light, REM, wake-ups, score, deep-sleep continuity). from/to bound both sources: a phone session is returned only when its real [sleep_start, sleep_end] interval overlaps the window, so a window with no sleep in it returns none rather than the most recent night. A phone sleep day is attributed to the local calendar day of its wake-up time and can hold several sessions: the night sleep and any naps are separate rows keyed by their sleep_start, never merged and never displacing each other. No stage or duration is inferred when a source does not report it.",
       inputSchema: z.object({
-        from: timeInput.optional(),
-        to: timeInput.optional(),
+        from: timeInput.optional()
+          .describe("Start of the window. Constrains phone sleep sessions by overlap, not only raw watch records."),
+        to: timeInput.optional()
+          .describe("End of the window. Constrains phone sleep sessions by overlap, not only raw watch records."),
         limit: z.number().int().min(1).max(2000).default(1000),
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
           .describe("Phone sleep day to return. Omit for the most recent stored sleep days."),
         sleep_days: z.number().int().min(1).max(60).default(7)
-          .describe("How many phone sleep days to return when no date is given."),
+          .describe("How many phone sleep days to return when neither a date nor a from/to window is given."),
       }),
       outputSchema,
       annotations: readAnnotations,
@@ -409,24 +498,37 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
           ])}`,
         );
         reflectRecordStatus(payload);
+        // An explicit window bounds the phone sessions too. Only the untouched
+        // default — no from, no to — falls back to the most recent sleep days,
+        // so asking about midday no longer answers with last night.
+        const windowed = from !== undefined || to !== undefined;
         const phone = await api.request(
           `/v1/health/sleep-summaries${queryString([
             ["source_day", date],
+            ["from", windowed ? fromEpoch : undefined],
+            ["to", windowed ? toEpoch : undefined],
             ["limit", date ? 1 : sleep_days],
           ])}`,
         );
         payload.data.phone_sleep = {
           status: phone.status,
           summaries: phone.data.summaries,
+          query: phone.data.query,
+          freshness: phone.data.freshness,
           semantics: phone.data.semantics,
         };
-        if (phone.data.summaries.length > 0) payload.status = "PASS";
+        if (phone.data.summaries.length > 0 && payload.status === "NO_DATA") {
+          payload.status = phone.status;
+        }
         const statuses = [...new Set(payload.data.records.map((record) => record.status))];
         return textResult(
           payload,
           [
             `watch: ${payload.data.records.length} sleep observations${statuses.length > 0 ? ` (${statuses.join(", ")})` : ""}`,
             summarizePhoneSleep(phone.data.summaries),
+            windowed
+              ? `window ${new Date(fromEpoch).toISOString()} → ${new Date(toEpoch).toISOString()} · phone sessions are filtered by overlap with it`
+              : `no window given; the most recent ${date ? "requested day" : `${sleep_days} sleep days`} are returned`,
             "sources are returned side by side; no merge or precedence",
           ].join(" · "),
         );
@@ -437,17 +539,25 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
     "health_activity",
     {
       title: "Daily activity",
-      description: "Read daily distance, calories, intensity, energy, standing, speed, and walking observations with explicit source semantics.",
+      description:
+        "Read daily activity for a calendar date from both sources side by side: bounded watch observations (distance, calories, intensity, energy, standing, speed, walking) and the vivo phone daily summaries (steps, distance, calories) with their source, source_day, source_timezone, sampled_at and verification intact.",
       inputSchema: z.object({
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-        timezone_offset_minutes: z.number().int().min(-720).max(840).default(540),
+        timezone_offset_minutes: calendarOffset,
       }),
       outputSchema,
       annotations: readAnnotations,
     },
     async ({ date, timezone_offset_minutes }) =>
       invoke(async () => {
-        const metrics = "distance,calories,intensity_sport,energy,standing,walking_speed,walking_status,speed";
+        // The phone metrics have to be named explicitly: /v1/health/today reads
+        // daily summaries only for the phone metrics it was asked for, so a
+        // watch-only metric list returned an empty daily_summaries and NO_DATA
+        // on days the phone had perfectly good totals stored.
+        const metrics = [
+          "distance,calories,intensity_sport,energy,standing,walking_speed,walking_status,speed",
+          "phone_step_count,phone_distance,phone_calories",
+        ].join(",");
         const payload = await api.request(
           `/v1/health/today${queryString([
             ["date", date],
@@ -455,7 +565,7 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
             ["metrics", metrics],
           ])}`,
         );
-        return textResult(payload, `${payload.data.date}: ${Object.keys(payload.data.metrics).length} activity metrics returned`);
+        return textResult(payload, summarizeActivity(payload));
       }),
   );
 

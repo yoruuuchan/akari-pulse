@@ -143,19 +143,28 @@ test("official MCP client lists and invokes the Akari Health stdio tools", async
       name: "health_latest",
       arguments: { metric: "heart_rate" },
     });
-    assert.equal(latest.structuredContent.status, "PASS");
+    // The fixture is stamped in the past, so every source behind these reads has
+    // long stopped reporting: the values still come back in full, under DEGRADED
+    // rather than PASS, with the stale source named.
+    assert.equal(latest.structuredContent.status, "DEGRADED");
     assert.equal(latest.structuredContent.data.records[0].value, 78);
+    assert.equal(latest.structuredContent.data.latest.value, 78);
+    assert.deepEqual(latest.structuredContent.data.freshness.stale_sources, ["WA2456C"]);
+    assert.equal(latest.structuredContent.data.freshness.by_source.WA2456C.state, "STALE");
+    assert.equal(latest.structuredContent.data.freshness.data_as_of, 1_786_245_212_000);
+    assert.match(latest.content[0].text, /STALE SOURCE, not a current reading/);
 
     const steps = await client.callTool({ name: "health_steps", arguments: {} });
-    assert.equal(steps.structuredContent.status, "PASS");
+    assert.equal(steps.structuredContent.status, "DEGRADED");
     assert.equal(steps.structuredContent.data.records[0].metric, "step_count_sensor");
+    assert.equal(steps.structuredContent.data.steps.watch.freshness.by_source.WA2456C.state, "STALE");
     assert.match(steps.content[0].text, /cumulative since boot; not a calendar-day total/);
 
     const datedSteps = await client.callTool({
       name: "health_steps",
       arguments: { date: "2026-08-09", timezone_offset_minutes: 480 },
     });
-    assert.equal(datedSteps.structuredContent.status, "PASS");
+    assert.equal(datedSteps.structuredContent.status, "DEGRADED");
     assert.equal(datedSteps.structuredContent.data.steps.watch.step_count_sensor.value, 3456);
     assert.equal(datedSteps.structuredContent.data.steps.phone.value, 4000);
     assert.equal(datedSteps.structuredContent.data.steps.phone.source_day, "2026-08-09");
@@ -351,7 +360,7 @@ test("MCP answers phone sleep and phone vitals beside the watch, with explicit s
     await client.connect(transport);
 
     const sleep = await client.callTool({ name: "health_sleep", arguments: {} });
-    assert.equal(sleep.structuredContent.status, "PASS");
+    assert.equal(sleep.structuredContent.status, "DEGRADED");
     const daySummaries = sleep.structuredContent.data.phone_sleep.summaries;
     assert.equal(daySummaries.length, 2);
     const night = daySummaries[0];
@@ -381,20 +390,57 @@ test("MCP answers phone sleep and phone vitals beside the watch, with explicit s
     });
     assert.deepEqual(datedSleep.structuredContent.data.phone_sleep.summaries, []);
 
+    // A window holding no sleep returns none. The night ended hours earlier and
+    // is outside the window — being the most recent stored night does not put it
+    // back in. Midday with no nap is an empty answer, not last night's answer.
+    const middayWindow = await client.callTool({
+      name: "health_sleep",
+      arguments: { from: "2026-01-02T12:00:00+08:00", to: "2026-01-02T13:00:00+08:00" },
+    });
+    assert.deepEqual(middayWindow.structuredContent.data.phone_sleep.summaries, []);
+    assert.match(middayWindow.content[0].text, /no vivo sleep session in the requested scope/);
+
+    // Overlap decides membership, so each window returns the session it actually
+    // covers: the afternoon nap, or the tail of the night, never both.
+    const napWindow = await client.callTool({
+      name: "health_sleep",
+      arguments: { from: "2026-01-02T15:30:00+08:00", to: "2026-01-02T15:45:00+08:00" },
+    });
+    assert.equal(napWindow.structuredContent.data.phone_sleep.summaries.length, 1);
+    assert.equal(napWindow.structuredContent.data.phone_sleep.summaries[0].sleep_start, napStart);
+
+    const morningWindow = await client.callTool({
+      name: "health_sleep",
+      arguments: { from: "2026-01-02T08:30:00+08:00", to: "2026-01-02T10:00:00+08:00" },
+    });
+    assert.equal(morningWindow.structuredContent.data.phone_sleep.summaries.length, 1);
+    assert.equal(morningWindow.structuredContent.data.phone_sleep.summaries[0].sleep_start, sleepStart);
+
     for (const [tool, watchMetric, phoneMetric, watchValue, phoneValue] of [
       ["health_heart_rate", "heart_rate", "phone_heart_rate", 71, 70],
       ["health_spo2", "spo2", "phone_spo2", 98, 96],
       ["health_stress", "stress", "phone_stress", 41, 30],
     ]) {
       const result = await client.callTool({ name: tool, arguments: {} });
-      const byMetric = Object.fromEntries(
-        result.structuredContent.data.records.map((record) => [record.metric, record]),
-      );
+      const { records, latest, latest_by_source: latestBySource } = result.structuredContent.data;
+      const byMetric = Object.fromEntries(records.map((record) => [record.metric, record]));
       assert.equal(byMetric[watchMetric].value, watchValue, `${tool} watch value`);
       assert.equal(byMetric[watchMetric].source_device, "WA2456C");
       assert.equal(byMetric[phoneMetric].value, phoneValue, `${tool} phone value`);
       assert.equal(byMetric[phoneMetric].source_device, "vivo_phone");
-      assert.match(result.content[0].text, /side by side; no merge or precedence/);
+      // Every phone reading in this fixture is newer than its watch counterpart,
+      // so the newest observation is named outright and sits first. No caller
+      // should have to infer a source precedence from record order.
+      assert.deepEqual(
+        records.map((record) => record.timestamp),
+        [...records.map((record) => record.timestamp)].sort((a, b) => b - a),
+        `${tool} newest first`,
+      );
+      assert.equal(latest.metric, phoneMetric, `${tool} latest metric`);
+      assert.equal(latest.value, phoneValue, `${tool} latest value`);
+      assert.equal(latestBySource.WA2456C.metric, watchMetric);
+      assert.equal(latestBySource.vivo_phone.metric, phoneMetric);
+      assert.match(result.content[0].text, /side by side, newest first/);
     }
 
     const windowed = await client.callTool({
@@ -413,6 +459,119 @@ test("MCP answers phone sleep and phone vitals beside the watch, with explicit s
     assert.equal(status.structuredContent.data.database.sleep_summary_count, 2);
     assert.equal(status.structuredContent.data.database.sleep_summary_latest_day, "2026-01-02");
     assert.equal(status.structuredContent.data.layers.vivo_private_health.status, "NO_DATA");
+  } finally {
+    await client.close();
+    await service.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+// health_activity used to ask /v1/health/today for watch metrics only, and that
+// route reads phone daily summaries only for the phone metrics it was asked for.
+// So on a day the phone had steps, distance and calories stored — and
+// health_today returned them — health_activity answered NO_DATA with an empty
+// daily_summaries. The fixture is stamped at the current moment so the live path
+// is exercised: a reporting source, PASS, and no staleness anywhere.
+test("health_activity returns the live phone daily summaries with their source semantics", async () => {
+  const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "akari-mcp-activity-test-"));
+  const token = "mcp-activity-token";
+  const service = createHealthService({
+    host: "127.0.0.1",
+    port: 0,
+    token,
+    databasePath: path.join(temporaryDirectory, "health.sqlite"),
+    maxBodyBytes: 1024 * 1024,
+  });
+  const address = await service.listen();
+  const serviceUrl = `http://127.0.0.1:${address.port}`;
+
+  // Synthetic fixture values: the shape is the verified one, the numbers are not
+  // anyone's. Whole seconds — the provider's sampled_at carries no sub-second component.
+  const sampledAtMs = Math.floor((Date.now() - 300_000) / 1000) * 1000;
+  const shanghai = new Date(sampledAtMs + 480 * 60_000);
+  const sourceDay = shanghai.toISOString().slice(0, 10);
+  const sampledAt = `${shanghai.toISOString().slice(0, 19)}+08:00`;
+
+  const ingest = await fetch(`${serviceUrl}/v1/health/daily-summaries`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      batch_id: "mcp-activity-fixture",
+      producer: "akari-pulse-android-fixture",
+      summaries: [
+        ["phone_step_count", "count", 4200, "VERIFIED"],
+        ["phone_distance", "m", 3120.75, "VERIFIED_FORMATTED_DISPLAY"],
+        ["phone_calories", "kcal", 205.4, "VERIFIED_FORMATTED_DISPLAY"],
+      ].map(([metric, unit, value, verification]) => ({
+        source: "vivo_phone",
+        metric,
+        source_day: sourceDay,
+        source_timezone: "Asia/Shanghai",
+        value,
+        unit,
+        sampled_at: sampledAt,
+        source_timestamp_available: false,
+        status: "PASS",
+        outcome: "PROVIDER_CALL_SUCCEEDED",
+        verification,
+      })),
+    }),
+  });
+  assert.equal(ingest.status, 202);
+
+  const environment = Object.fromEntries(
+    Object.entries(process.env).filter((entry) => typeof entry[1] === "string"),
+  );
+  environment.AKARI_HEALTH_URL = serviceUrl;
+  environment.AKARI_HEALTH_TOKEN = token;
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [mcpEntry],
+    env: environment,
+    stderr: "pipe",
+  });
+  const client = new Client(
+    { name: "akari-health-activity-e2e-test", version: "0.1.0" },
+    { versionNegotiation: { mode: "auto" } },
+  );
+
+  try {
+    await client.connect(transport);
+
+    const activity = await client.callTool({
+      name: "health_activity",
+      arguments: { date: sourceDay, timezone_offset_minutes: 480 },
+    });
+    assert.equal(activity.structuredContent.status, "PASS");
+    const phone = activity.structuredContent.data.daily_summaries.vivo_phone;
+    assert.equal(phone.phone_distance.value, 3120.75);
+    assert.equal(phone.phone_calories.value, 205.4);
+    assert.equal(phone.phone_step_count.value, 4200);
+    // Provenance travels with the value, not just the number.
+    assert.equal(phone.phone_distance.source, "vivo_phone");
+    assert.equal(phone.phone_distance.source_day, sourceDay);
+    assert.equal(phone.phone_distance.source_timezone, "Asia/Shanghai");
+    assert.equal(phone.phone_distance.sampled_at, sampledAt);
+    assert.equal(phone.phone_distance.verification, "VERIFIED_FORMATTED_DISPLAY");
+    assert.equal(phone.phone_step_count.verification, "VERIFIED");
+    assert.match(activity.content[0].text, /vivo_phone phone_distance: 3120\.75 m/);
+
+    // A live source is PASS, and data_as_of is the provider read behind it —
+    // not the moment this response happened to be generated.
+    assert.deepEqual(activity.structuredContent.data.freshness.stale_sources, []);
+    assert.equal(activity.structuredContent.data.freshness.by_source.vivo_phone.state, "FRESH");
+    assert.equal(activity.structuredContent.data.freshness.data_as_of, sampledAtMs);
+    assert.ok(activity.structuredContent.generated_at >= sampledAtMs);
+
+    // With no arguments at all the calendar day still resolves in the provider's
+    // zone, so the same summaries come back without the caller naming a date.
+    const undated = await client.callTool({ name: "health_activity", arguments: {} });
+    assert.equal(undated.structuredContent.data.timezone, "Asia/Shanghai");
+    assert.equal(undated.structuredContent.data.timezone_offset_minutes, 480);
+    assert.equal(undated.structuredContent.data.timezone_source, "provider_default");
+    assert.equal(undated.structuredContent.data.date, sourceDay);
+    assert.equal(undated.structuredContent.data.daily_summaries.vivo_phone.phone_calories.value, 205.4);
   } finally {
     await client.close();
     await service.close();
