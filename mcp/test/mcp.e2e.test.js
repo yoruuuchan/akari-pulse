@@ -133,6 +133,24 @@ test("official MCP client lists and invokes the Akari Health stdio tools", async
     assert.equal(listed.tools.find((tool) => tool.name === "health_latest").annotations.readOnlyHint, true);
     assert.equal(listed.tools.find((tool) => tool.name === "health_start_session").annotations.readOnlyHint, false);
 
+    // A numeric JSON Schema `default` is auto-filled by LLM clients and generated
+    // callers, which would turn every call into a caller_override and quietly
+    // defeat the provider zone. The parameter stays optional with no default, and
+    // the runtime applies Asia/Shanghai when it is absent.
+    for (const name of ["health_today", "health_steps", "health_activity"]) {
+      const tool = listed.tools.find((candidate) => candidate.name === name);
+      const offset = tool.inputSchema.properties.timezone_offset_minutes;
+      assert.equal(Object.hasOwn(offset, "default"), false, `${name} must not advertise a default offset`);
+      assert.equal(
+        tool.inputSchema.required?.includes("timezone_offset_minutes") ?? false,
+        false,
+        `${name} offset must stay optional`,
+      );
+      assert.match(offset.description, /Asia\/Shanghai/, `${name} offset description names the provider zone`);
+      assert.match(tool.description, /Asia\/Shanghai/, `${name} description names the provider zone`);
+      assert.equal(JSON.stringify(tool.inputSchema).includes("540"), false, `${name} schema must not mention 540`);
+    }
+
     const status = await client.callTool({ name: "health_status", arguments: {} });
     assert.equal(status.isError, undefined);
     assert.equal(status.structuredContent.data.database.record_count, 2);
@@ -143,21 +161,26 @@ test("official MCP client lists and invokes the Akari Health stdio tools", async
       name: "health_latest",
       arguments: { metric: "heart_rate" },
     });
-    // The fixture is stamped in the past, so every source behind these reads has
-    // long stopped reporting: the values still come back in full, under DEGRADED
-    // rather than PASS, with the stale source named.
-    assert.equal(latest.structuredContent.status, "DEGRADED");
+    // This read touches only the watch, a HISTORICAL source: the value is
+    // genuinely five days old and says so, but a source that is read on demand
+    // rather than on a schedule cannot be late, so the read itself passes.
+    assert.equal(latest.structuredContent.status, "PASS");
     assert.equal(latest.structuredContent.data.records[0].value, 78);
     assert.equal(latest.structuredContent.data.latest.value, 78);
     assert.deepEqual(latest.structuredContent.data.freshness.stale_sources, ["WA2456C"]);
+    assert.deepEqual(latest.structuredContent.data.freshness.historical_sources, ["WA2456C"]);
+    assert.deepEqual(latest.structuredContent.data.freshness.degraded_sources, []);
     assert.equal(latest.structuredContent.data.freshness.by_source.WA2456C.state, "STALE");
+    assert.equal(latest.structuredContent.data.freshness.by_source.WA2456C.lifecycle, "HISTORICAL");
     assert.equal(latest.structuredContent.data.freshness.data_as_of, 1_786_245_212_000);
-    assert.match(latest.content[0].text, /STALE SOURCE, not a current reading/);
+    assert.match(latest.content[0].text, /HISTORICAL SOURCE, read on demand/);
+    assert.match(latest.content[0].text, /not a current reading/);
 
     const steps = await client.callTool({ name: "health_steps", arguments: {} });
-    assert.equal(steps.structuredContent.status, "DEGRADED");
+    assert.equal(steps.structuredContent.status, "PASS");
     assert.equal(steps.structuredContent.data.records[0].metric, "step_count_sensor");
     assert.equal(steps.structuredContent.data.steps.watch.freshness.by_source.WA2456C.state, "STALE");
+    assert.equal(steps.structuredContent.data.steps.watch.freshness.by_source.WA2456C.lifecycle, "HISTORICAL");
     assert.match(steps.content[0].text, /cumulative since boot; not a calendar-day total/);
 
     const datedSteps = await client.callTool({

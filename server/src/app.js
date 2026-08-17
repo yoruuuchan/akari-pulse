@@ -104,28 +104,30 @@ function buildFreshness(observations, sourceFreshness, now) {
       source.received_at = observation.received_at;
     }
   }
-  const staleSources = Object.entries(bySource)
-    .filter(([, source]) => source.state === "STALE")
-    .map(([name]) => name);
+  const entries = Object.entries(bySource);
   return {
     data_as_of: observedTimes.length > 0 ? Math.max(...observedTimes) : null,
     received_at: receivedTimes.length > 0 ? Math.max(...receivedTimes) : null,
     data_as_of_by_metric: byMetric,
     by_source: bySource,
-    stale_sources: staleSources,
+    stale_sources: entries.filter(([, s]) => s.state === "STALE").map(([name]) => name),
+    historical_sources: entries.filter(([, s]) => s.lifecycle === "HISTORICAL").map(([name]) => name),
+    degraded_sources: entries
+      .filter(([, s]) => s.state === "STALE" && s.counts_toward_production_health)
+      .map(([name]) => name),
     stale_after_ms: SOURCE_STALE_AFTER_MS,
     semantics:
-      "data_as_of is the newest observation in this response; age_ms is how old that value is now. source_latest_at/source_age_ms/state describe the source itself, whatever window was asked for. A source is STALE once its newest observation is older than stale_after_ms; status is DEGRADED while any returned source is stale.",
+      "data_as_of is the newest observation in this response; age_ms is how old that value is now. source_latest_at/source_age_ms/state describe the source itself, whatever window was asked for. A source is STALE once its newest observation is older than stale_after_ms, and stale_sources lists every one of them. Only an ACTIVE source's staleness is a fault: degraded_sources drives the status, while a HISTORICAL source is read on demand, keeps its real age here, and is not a production-health signal.",
   };
 }
 
-// PASS only when everything returned comes from a source that is still
-// reporting. Data from a source that went quiet days ago is still returned —
-// with its real timestamps — but the response says so instead of presenting it
-// as a current reading.
+// PASS only when everything returned comes from a source that was supposed to
+// keep reporting and did. Old data is still returned with its real timestamps
+// either way — the response just refuses to present it as a current reading, and
+// refuses equally to call a manual source's silence an outage.
 function freshnessStatus(freshness, hasData) {
   if (!hasData) return "NO_DATA";
-  return freshness.stale_sources.length > 0 ? "DEGRADED" : "PASS";
+  return freshness.degraded_sources.length > 0 ? "DEGRADED" : "PASS";
 }
 
 function recordObservations(records) {
@@ -298,7 +300,7 @@ export function createHealthService(config, { now = () => Date.now() } = {}) {
         const status = database.status(now());
         sendJson(response, 200, {
           ok: true,
-          status: status.freshness.stale_sources.length > 0 ? "DEGRADED" : "PASS",
+          status: status.freshness.degraded_sources.length > 0 ? "DEGRADED" : "PASS",
           generated_at: now(),
           data: status,
         });

@@ -7,9 +7,11 @@ const timeInput = z.union([
   z.number().int().nonnegative(),
   z.string().min(1).describe("ISO-8601 timestamp, including an offset when not UTC"),
 ]);
-// DEGRADED: the read succeeded and the data is returned, but at least one source
-// behind it stopped reporting. Reaching the database is not the same as the
-// health data being current, and the two must not collapse into one PASS.
+// DEGRADED: the read succeeded and the data is returned, but an active
+// production source behind it stopped reporting. Reaching the database is not
+// the same as the health data being current, and the two must not collapse into
+// one PASS. A source read on demand rather than on a schedule is HISTORICAL and
+// does not trigger this — its real age still travels in freshness.
 const statusSchema = z.enum(["PASS", "DEGRADED", "NO_DATA", "DENIED", "UNSUPPORTED", "API_MISSING", "ERROR"]);
 const outputSchema = z.object({
   ok: z.boolean(),
@@ -88,8 +90,7 @@ function summarizeLatest(payload, metric = null) {
   const { records, freshness } = payload.data;
   if (records.length === 0) return `no ${metric || "health"} observations are available`;
   if (records.length === 1) return describeRecord(records[0], records[0].metric, freshness);
-  const stale = freshness.stale_sources.length > 0 ? ` · stale sources: ${freshness.stale_sources.join(", ")}` : "";
-  return `${records.length} latest health metrics returned, newest first${stale}`;
+  return `${records.length} latest health metrics returned, newest first · ${summarizeSourceHealth(freshness)}`;
 }
 
 function summarizeStepSources(payload) {
@@ -107,8 +108,7 @@ function summarizeStepSources(payload) {
     parts.push(`phone: ${steps.phone.status} (${steps.phone.source_day}, sampled ${steps.phone.sampled_at})`);
   }
   if (parts.length === 0) parts.push(`no step observations are available for ${payload.data.date}`);
-  const stale = payload.data.freshness.stale_sources;
-  if (stale.length > 0) parts.push(`stale sources: ${stale.join(", ")}`);
+  parts.push(summarizeSourceHealth(payload.data.freshness));
   return `${parts.join(" · ")} · sources are returned side by side; no merge or precedence`;
 }
 
@@ -165,13 +165,37 @@ function formatAge(ageMs) {
   return `${Math.round(hours / 24)}d old`;
 }
 
+// A stale value is never presented as a current reading — but why it is stale
+// matters: an ACTIVE feed that went quiet is a fault, a HISTORICAL source read
+// on demand is simply not being used right now.
+function describeSourceState(source) {
+  if (!source || source.state !== "STALE") return "";
+  return source.lifecycle === "HISTORICAL"
+    ? " · HISTORICAL SOURCE, read on demand and not currently reporting; not a current reading"
+    : " · STALE SOURCE, not a current reading";
+}
+
 function describeRecord(record, label, freshness) {
   if (!record) return `${label}: no observation`;
   const value = Object.hasOwn(record, "value") ? JSON.stringify(record.value) : record.status;
   const source = freshness?.by_source?.[record.source_device];
   const age = source ? ` · ${formatAge(source.age_ms)}` : "";
-  const stale = source?.state === "STALE" ? " · STALE SOURCE, not a current reading" : "";
-  return `${label} (${record.source_device}): ${value}${record.unit ? ` ${record.unit}` : ""} · ${new Date(record.timestamp).toISOString()}${age}${stale}`;
+  return `${label} (${record.source_device}): ${value}${record.unit ? ` ${record.unit}` : ""} · ${new Date(record.timestamp).toISOString()}${age}${describeSourceState(source)}`;
+}
+
+// The alarm is degraded_sources, not stale_sources: a historical source's age is
+// context, not a problem to report.
+function summarizeSourceHealth(freshness) {
+  const parts = [];
+  if (freshness.degraded_sources.length > 0) {
+    parts.push(`DEGRADED: ${freshness.degraded_sources.join(", ")} stopped reporting`);
+  }
+  const historical = freshness.historical_sources.filter((name) => freshness.stale_sources.includes(name));
+  if (historical.length > 0) {
+    parts.push(`historical (read on demand, not a production-health signal): ${historical.join(", ")}`);
+  }
+  if (parts.length === 0) parts.push("all returned sources are reporting");
+  return parts.join(" · ");
 }
 
 // Names the genuinely newest observation first, then each source's own latest.
@@ -204,7 +228,7 @@ function summarizeActivity(payload) {
       );
     }
   }
-  if (freshness.stale_sources.length > 0) parts.push(`stale sources: ${freshness.stale_sources.join(", ")}`);
+  parts.push(summarizeSourceHealth(freshness));
   parts.push("sources are returned side by side; no merge or precedence");
   return parts.join(" · ");
 }
@@ -244,16 +268,20 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
         payload.data.layers.mcp_query = { status: "PASS", timestamp: Date.now(), age_ms: 0, state: "FRESH" };
         const { freshness } = payload.data;
         const sources = Object.entries(freshness.by_source)
-          .map(([name, source]) => `${name} ${source.state.toLowerCase()} (${formatAge(source.source_age_ms)})`)
+          .map(([name, source]) =>
+            `${name} ${source.lifecycle.toLowerCase()}/${source.state.toLowerCase()} (${formatAge(source.source_age_ms)})`)
           .join(", ");
         return textResult(
           payload,
           [
             `akari health: ${payload.status} · ${payload.data.database.record_count} records · ingest ${payload.data.layers.backend_ingest.status} · mcp query PASS`,
             `sources: ${sources || "none"}`,
-            freshness.stale_sources.length > 0
-              ? `DEGRADED: ${freshness.stale_sources.join(", ")} stopped reporting; the query path is healthy but that source's data is not current`
-              : "all known sources are reporting",
+            freshness.degraded_sources.length > 0
+              ? `DEGRADED: ${freshness.degraded_sources.join(", ")} is an active production source and stopped reporting; the query path is healthy but that source's data is not current`
+              : "every active production source is reporting",
+            freshness.historical_sources.length > 0
+              ? `historical sources (read on demand, records still queryable, not a production-health signal): ${freshness.historical_sources.join(", ")}`
+              : "no historical sources",
           ].join(" · "),
         );
       }),
@@ -279,7 +307,9 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
     "health_today",
     {
       title: "Today's health summary",
-      description: "Read bounded watch metrics and phone daily summaries for a calendar date. Phone records retain their source_day and are never re-bucketed from sampled_at.",
+      description:
+        "Read bounded watch metrics and phone daily summaries for a calendar date. Phone records retain their source_day and are never re-bucketed from sampled_at." +
+        " The calendar day defaults to the vivo provider's own zone (Asia/Shanghai, UTC+8) when timezone_offset_minutes is omitted; there is no other default and the client's local zone is never used.",
       inputSchema: z.object({
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         timezone_offset_minutes: calendarOffset,
@@ -307,7 +337,7 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
             freshness.data_as_of === null
               ? "no observation behind this response"
               : `data as of ${new Date(freshness.data_as_of).toISOString()}`,
-            freshness.stale_sources.length > 0 ? `stale sources: ${freshness.stale_sources.join(", ")}` : "all returned sources are reporting",
+            summarizeSourceHealth(freshness),
           ].join(" · "),
         );
       }),
@@ -412,7 +442,9 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
     "health_steps",
     {
       title: "Steps",
-      description: "Return watch official/sensor steps and the vivo phone daily summary side by side. Sources are never merged and neither source overrides the other.",
+      description:
+        "Return watch official/sensor steps and the vivo phone daily summary side by side. Sources are never merged and neither source overrides the other." +
+        " The calendar day defaults to the vivo provider's own zone (Asia/Shanghai, UTC+8) when timezone_offset_minutes is omitted; there is no other default and the client's local zone is never used.",
       inputSchema: z.object({
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         timezone_offset_minutes: calendarOffset,
@@ -540,7 +572,8 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
     {
       title: "Daily activity",
       description:
-        "Read daily activity for a calendar date from both sources side by side: bounded watch observations (distance, calories, intensity, energy, standing, speed, walking) and the vivo phone daily summaries (steps, distance, calories) with their source, source_day, source_timezone, sampled_at and verification intact.",
+        "Read daily activity for a calendar date from both sources side by side: bounded watch observations (distance, calories, intensity, energy, standing, speed, walking) and the vivo phone daily summaries (steps, distance, calories) with their source, source_day, source_timezone, sampled_at and verification intact." +
+        " The calendar day defaults to the vivo provider's own zone (Asia/Shanghai, UTC+8) when timezone_offset_minutes is omitted; there is no other default and the client's local zone is never used.",
       inputSchema: z.object({
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         timezone_offset_minutes: calendarOffset,

@@ -61,6 +61,40 @@ export const HEALTH_CALENDAR_OFFSET_MINUTES = 480;
 // reported next to every freshness block so the rule is legible to callers
 // rather than hidden in the server.
 export const SOURCE_STALE_AFTER_MS = 86400000;
+
+// What a source is, as opposed to how it is doing. Staleness only means
+// something for a source that is expected to report on its own; a source that
+// only ever speaks when asked cannot be late.
+//
+// ACTIVE      the continuous production feed. Silence is a fault and holds the
+//             pipeline at DEGRADED until it is fixed.
+// HISTORICAL  read on demand, never on a schedule. Its stored observations stay
+//             fully queryable and keep their real age and state, but its silence
+//             is its resting state and does not decide production health.
+//
+// Unknown sources default to ACTIVE, so a new feed that goes quiet is flagged
+// rather than silently excused.
+export const DEFAULT_SOURCE_LIFECYCLE = "ACTIVE";
+export const SOURCE_LIFECYCLE = new Map([
+  [
+    "vivo_phone",
+    {
+      lifecycle: "ACTIVE",
+      note: "continuous production feed: the Android UplinkWorker reads the vivo providers and uploads on its own schedule, so a gap here is a real fault",
+    },
+  ],
+  [
+    "WA2456C",
+    {
+      lifecycle: "HISTORICAL",
+      note: "manual BlueOS watch harness: every observation comes from someone opening the sideloaded quick app and pressing a collect button (one run per launch, no scheduler and no background service on the watch), so it produces data only while it is being used. Its ingest route stays live and its records stay fully queryable; it is simply not a continuous source and is not a production-health signal",
+    },
+  ],
+]);
+
+export function sourceLifecycle(source) {
+  return SOURCE_LIFECYCLE.get(source) ?? { lifecycle: DEFAULT_SOURCE_LIFECYCLE, note: null };
+}
 const PHONE_DAILY_STATUSES = new Set(["PASS", "NO_DATA", "ERROR"]);
 const PHONE_DAILY_OUTCOMES_BY_STATUS = new Map([
   ["PASS", new Set(["PROVIDER_CALL_SUCCEEDED"])],

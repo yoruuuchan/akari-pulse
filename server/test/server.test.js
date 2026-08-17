@@ -459,3 +459,84 @@ test("JSON ingress accepts parameters but rejects media-type prefixes", async ()
     assert.equal(rejected.body.error.code, "UNSUPPORTED_MEDIA_TYPE");
   });
 });
+
+// WA2456C is the BlueOS watch quick app: it has no scheduler and no background
+// service, so every observation it ever produced came from someone opening the
+// sideloaded app and pressing a collect button. Its silence is the resting state
+// of a manual harness, not an outage — but its data is genuinely old, and the
+// response has to say both things at once.
+test("a historical source's silence is visible but does not degrade production health", async () => {
+  await withService(async ({ request, fixedNow }) => {
+    const longAgo = fixedNow - 5 * 86_400_000;
+    const ingest = await request("/v1/health/batches", {
+      method: "POST",
+      body: JSON.stringify({
+        batch_id: "lifecycle-watch-batch",
+        producer: "watch-test",
+        events: [{
+          event_id: "lifecycle-watch-hr",
+          timestamp: longAgo,
+          metric: "heart_rate",
+          value: 74,
+          unit: "bpm",
+          source_device: "WA2456C",
+          status: "PASS",
+        }],
+      }),
+    });
+    assert.equal(ingest.response.status, 202);
+
+    const watchOnly = await request("/v1/health/latest?metric=heart_rate");
+    // The reading is still returned, still five days old, and still labelled stale.
+    assert.equal(watchOnly.body.data.records[0].value, 74);
+    assert.equal(watchOnly.body.data.records[0].timestamp, longAgo);
+    const watchSource = watchOnly.body.data.freshness.by_source.WA2456C;
+    assert.equal(watchSource.state, "STALE");
+    assert.equal(watchSource.lifecycle, "HISTORICAL");
+    assert.equal(watchSource.counts_toward_production_health, false);
+    assert.equal(watchSource.source_age_ms, 5 * 86_400_000);
+    assert.deepEqual(watchOnly.body.data.freshness.stale_sources, ["WA2456C"]);
+    assert.deepEqual(watchOnly.body.data.freshness.historical_sources, ["WA2456C"]);
+    // ...but a source nobody asked to report cannot be late, so the read passes.
+    assert.deepEqual(watchOnly.body.data.freshness.degraded_sources, []);
+    assert.equal(watchOnly.body.status, "PASS");
+
+    const status = await request("/v1/status");
+    assert.equal(status.body.status, "PASS");
+    assert.deepEqual(status.body.data.freshness.stale_sources, ["WA2456C"]);
+    assert.deepEqual(status.body.data.freshness.degraded_sources, []);
+    assert.equal(status.body.data.layers.watch_module_api.status, "NO_DATA");
+
+    // The active production feed is held to the opposite standard: the same age
+    // on vivo_phone is a fault and does degrade the pipeline.
+    const phoneIngest = await request("/v1/health/batches", {
+      method: "POST",
+      body: JSON.stringify({
+        batch_id: "lifecycle-phone-batch",
+        producer: "phone-test",
+        events: [{
+          event_id: "lifecycle-phone-hr",
+          timestamp: longAgo,
+          metric: "phone_heart_rate",
+          value: 66,
+          unit: "bpm",
+          source_device: "vivo_phone",
+          status: "PASS",
+        }],
+      }),
+    });
+    assert.equal(phoneIngest.response.status, 202);
+
+    const both = await request("/v1/health/latest?metrics=heart_rate,phone_heart_rate");
+    assert.equal(both.body.data.records.length, 2);
+    assert.equal(both.body.data.freshness.by_source.vivo_phone.lifecycle, "ACTIVE");
+    assert.equal(both.body.data.freshness.by_source.vivo_phone.counts_toward_production_health, true);
+    assert.deepEqual(both.body.data.freshness.degraded_sources, ["vivo_phone"]);
+    assert.equal(both.body.status, "DEGRADED");
+
+    const degradedStatus = await request("/v1/status");
+    assert.equal(degradedStatus.body.status, "DEGRADED");
+    assert.deepEqual(degradedStatus.body.data.freshness.degraded_sources, ["vivo_phone"]);
+    assert.deepEqual(degradedStatus.body.data.freshness.stale_sources.sort(), ["WA2456C", "vivo_phone"]);
+  });
+});

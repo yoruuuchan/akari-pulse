@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { HttpError, SLEEP_DURATION_KEYS, SOURCE_STALE_AFTER_MS } from "./validation.js";
+import { HttpError, SLEEP_DURATION_KEYS, SOURCE_STALE_AFTER_MS, sourceLifecycle } from "./validation.js";
 
 const DIAGNOSTIC_LAYERS = [
   "watch_module_api",
@@ -1094,11 +1094,19 @@ export class HealthDatabase {
     const bySource = {};
     for (const row of rows) {
       const age = Math.max(0, now - row.observed_at);
+      const { lifecycle, note } = sourceLifecycle(row.source);
+      const state = age > SOURCE_STALE_AFTER_MS ? "STALE" : "FRESH";
       bySource[row.source] = {
+        lifecycle,
+        lifecycle_note: note,
         source_latest_at: row.observed_at,
         source_age_ms: age,
         source_received_at: row.received_at,
-        state: age > SOURCE_STALE_AFTER_MS ? "STALE" : "FRESH",
+        // state stays literal, whatever the lifecycle: a historical source's age
+        // is reported exactly as it is. Only whether that age counts against the
+        // pipeline's health depends on the lifecycle.
+        state,
+        counts_toward_production_health: lifecycle === "ACTIVE",
       };
     }
     return bySource;
@@ -1172,8 +1180,11 @@ export class HealthDatabase {
       : { status: "NO_DATA", timestamp: null };
     layers.database = { status: "PASS", timestamp: now };
     // A layer's status describes the last time it ran, not the present. Age
-    // travels with it so a PASS recorded days ago cannot read as a live PASS.
+    // travels with it so a PASS recorded days ago cannot read as a live PASS,
+    // and the source's lifecycle travels with it so a manual harness's old PASS
+    // is not misread as a production layer that failed.
     for (const layer of Object.values(layers)) {
+      if (layer.source_device) layer.lifecycle = sourceLifecycle(layer.source_device).lifecycle;
       if (layer.timestamp === null || layer.timestamp === undefined) continue;
       layer.age_ms = Math.max(0, now - layer.timestamp);
       layer.state = layer.age_ms > SOURCE_STALE_AFTER_MS ? "STALE" : "FRESH";
@@ -1231,8 +1242,12 @@ export class HealthDatabase {
         by_source: bySource,
         fresh_sources: sourceEntries.filter(([, s]) => s.state === "FRESH").map(([name]) => name),
         stale_sources: sourceEntries.filter(([, s]) => s.state === "STALE").map(([name]) => name),
+        historical_sources: sourceEntries.filter(([, s]) => s.lifecycle === "HISTORICAL").map(([name]) => name),
+        degraded_sources: sourceEntries
+          .filter(([, s]) => s.state === "STALE" && s.counts_toward_production_health)
+          .map(([name]) => name),
         semantics:
-          "generated_at is when this response was built; data_as_of is the newest health observation behind it; received_at is when the backend took that observation in. A source is STALE once its newest observation is older than stale_after_ms. A reachable database and a successful query do not make its data fresh.",
+          "generated_at is when this response was built; data_as_of is the newest health observation behind it; received_at is when the backend took that observation in. A source is STALE once its newest observation is older than stale_after_ms; stale_sources lists every one of them regardless of lifecycle. Only an ACTIVE source's staleness is a fault, so degraded_sources drives the overall status. A HISTORICAL source is read on demand rather than on a schedule: its records stay queryable and its real age stays visible, but its silence is not an outage. A reachable database and a successful query do not make any source's data fresh.",
       },
       layers,
     };
