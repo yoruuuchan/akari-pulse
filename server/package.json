@@ -2,6 +2,18 @@
   "name": "@akari-pulse/server",
   "version": "0.1.0",
   "private": true,
+  "description": "Akari Pulse health ingest and query HTTP service.",
+  "license": "AGPL-3.0-only",
+  "author": "Yoru (https://github.com/yoruuuchan)",
+  "homepage": "https://github.com/yoruuuchan/akari-pulse#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yoruuuchan/akari-pulse.git",
+    "directory": "server"
+  },
+  "bugs": {
+    "url": "https://github.com/yoruuuchan/akari-pulse/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=24.0.0"
@@ -11,4 +23,3 @@
     "test": "node --test"
   }
 }
-

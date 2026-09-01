@@ -40,7 +40,19 @@ The Codex example forwards `AKARI_HEALTH_TOKEN` from the local environment throu
 | `health_stop_session` | close session metadata only |
 | `health_session_summary` | descriptive HR coverage and temporal event associations |
 
-Every read tool is annotated `readOnlyHint: true`. Start/stop are non-destructive metadata writes. There is no MCP tool that updates or deletes a raw health record.
+### Tool annotations
+
+All four MCP hints are declared explicitly on every tool. Leaving one unset is not neutral — a client then falls back on the spec defaults, which read `destructiveHint` and `openWorldHint` as `true`, and neither is true of anything here.
+
+| Tools | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+|---|---|---|---|---|
+| the twelve read tools | `true` | `false` | `true` | `false` |
+| `health_start_session` | `false` | `false` | `false` | `false` |
+| `health_stop_session` | `false` | `false` | `true` | `false` |
+
+`openWorldHint` is `false` on all fourteen: every tool talks to exactly one place, the Akari Health HTTP service named by `AKARI_HEALTH_URL`, backed by its own SQLite store. No tool accepts a URL or reaches a third party, so the domain of interaction is a closed, enumerable set of metrics, records and sessions.
+
+Session metadata is the only thing any tool writes; there is no MCP route that updates or deletes a raw health record, which is why both writes are `destructiveHint: false`. They differ in repeat behavior: starting appends another open session every call, while stopping is a one-way `OPEN` → `CLOSED` transition and the backend replays an already-closed session unchanged rather than restamping it.
 
 ## Verification
 

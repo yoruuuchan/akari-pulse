@@ -20,10 +20,19 @@ const outputSchema = z.object({
   data: z.unknown(),
 });
 
+// All four hints are stated outright on every tool. Left unset, a client falls
+// back on the spec defaults — destructiveHint and openWorldHint both true — and
+// neither of those is right for anything here.
+//
+// openWorldHint is false throughout: every tool talks to exactly one place, the
+// Akari Health HTTP service named by AKARI_HEALTH_URL, backed by its own SQLite
+// store. No tool accepts a URL or reaches a third party, so the domain of
+// interaction is a closed, enumerable set of metrics, records and sessions.
 const readAnnotations = {
   readOnlyHint: true,
   destructiveHint: false,
   idempotentHint: true,
+  openWorldHint: false,
 };
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -251,7 +260,18 @@ async function invoke(handler) {
 }
 
 export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
-  const server = new McpServer({ name: "akari-health", version: "0.1.0" });
+  // name is the wire identifier that connectors cache and client configs bind
+  // to, so it stays "akari-health". title, description and websiteUrl are what a
+  // client shows a person, and they name the same publisher as the repository
+  // and the package manifests.
+  const server = new McpServer({
+    name: "akari-health",
+    title: "Akari Health",
+    version: "0.1.0",
+    description:
+      "Read-only queries over a self-hosted Akari Pulse health store, plus heart-rate session metadata.",
+    websiteUrl: "https://github.com/yoruuuchan/akari-pulse",
+  });
 
   server.registerTool(
     "health_status",
@@ -685,7 +705,16 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
         started_at: timeInput.optional(),
       }),
       outputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      // Session metadata is the only thing any MCP tool writes; no route here
+      // updates or deletes a raw health observation. Each call appends another
+      // open session, so this is neither read-only nor idempotent — but it
+      // destroys nothing.
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
     },
     async ({ source_device, label, started_at }) =>
       invoke(async () => {
@@ -711,7 +740,16 @@ export function createMcpServer({ api = new HealthApi(loadApiConfig()) } = {}) {
         ended_at: timeInput.optional(),
       }),
       outputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      // A one-way OPEN → CLOSED transition that only fills in ended_at. Nothing
+      // is deleted and no observation is touched, and the backend replays an
+      // already-closed session unchanged rather than restamping it, so repeat
+      // calls really are idempotent.
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ session_id, ended_at }) =>
       invoke(async () => {

@@ -290,7 +290,8 @@ Android 手表接收器仍保留可构建状态作为后备。OrbitV 仅用于 R
 原始健康记录没有任何更新/删除的 HTTP 或 MCP 路由。会话摘要可以基于真实样本和带时间戳的
 事件计算基线、峰值、增量、上升延迟和到峰时间，但都会声明：时间上的关联不构成因果。
 
-MCP 暴露 14 个窄工具，每个读工具都标注了 `readOnlyHint`。完整列表与语义见
+MCP 暴露 14 个窄工具，每一个都显式声明了四项 MCP 注解——`readOnlyHint`、`destructiveHint`、
+`idempotentHint`、`openWorldHint`——而不依赖规范默认值。完整列表、语义与注解矩阵见
 [mcp/README.md](mcp/README.md)。
 
 ## 当前交付状态

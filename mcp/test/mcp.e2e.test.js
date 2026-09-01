@@ -130,8 +130,26 @@ test("official MCP client lists and invokes the Akari Health stdio tools", async
       "health_stress",
       "health_today",
     ]);
-    assert.equal(listed.tools.find((tool) => tool.name === "health_latest").annotations.readOnlyHint, true);
-    assert.equal(listed.tools.find((tool) => tool.name === "health_start_session").annotations.readOnlyHint, false);
+    // Every tool has to state all four hints outright. An absent hint is not
+    // neutral: the client falls back on the spec defaults, which read
+    // destructiveHint and openWorldHint as true for tools that are neither.
+    const readToolHints = {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    };
+    const writeToolHints = {
+      health_start_session: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      health_stop_session: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    };
+    for (const tool of listed.tools) {
+      const expected = writeToolHints[tool.name] ?? readToolHints;
+      for (const [hint, value] of Object.entries(expected)) {
+        assert.equal(Object.hasOwn(tool.annotations, hint), true, `${tool.name} must declare ${hint}`);
+        assert.equal(tool.annotations[hint], value, `${tool.name} ${hint}`);
+      }
+    }
 
     // A numeric JSON Schema `default` is auto-filled by LLM clients and generated
     // callers, which would turn every call into a caller_override and quietly

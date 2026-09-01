@@ -323,8 +323,10 @@ Raw health records have no update/delete HTTP or MCP route. Session summaries ma
 baseline, peak, delta, latency-to-rise, and time-to-peak from real samples and timestamped
 events, but they state that temporal association does not establish causality.
 
-The MCP exposes 14 narrow tools; each read tool is annotated `readOnlyHint`. The full list
-and their semantics are in [mcp/README.md](mcp/README.md).
+The MCP exposes 14 narrow tools. Every one declares all four MCP annotations —
+`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint` — explicitly rather than
+relying on the spec defaults. The full list, their semantics, and the annotation matrix are in
+[mcp/README.md](mcp/README.md).
 
 ## Current delivery status
 

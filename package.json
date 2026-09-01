@@ -2,6 +2,17 @@
   "name": "akari-pulse",
   "version": "0.1.0",
   "private": true,
+  "description": "Self-hosted BlueOS watch to phone to server to MCP health pipeline.",
+  "license": "AGPL-3.0-only",
+  "author": "Yoru (https://github.com/yoruuuchan)",
+  "homepage": "https://github.com/yoruuuchan/akari-pulse#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yoruuuchan/akari-pulse.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yoruuuchan/akari-pulse/issues"
+  },
   "type": "module",
   "workspaces": [
     "server",
