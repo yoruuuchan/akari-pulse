@@ -1,5 +1,9 @@
 # Akari Pulse
 
+<a href="https://github.com/DasterProkio/awesome-ai-companion">
+  <img src="https://raw.githubusercontent.com/DasterProkio/awesome-ai-companion/main/assets/featured-in-awesome-ai-companion.png" alt="Featured in Awesome AI Companion" height="24">
+</a>
+
 English | [中文](README.zh-CN.md)
 
 **Akari Pulse is a self-hosted bridge that takes the health data your own vivo phone and
