@@ -12,6 +12,8 @@ You run every part of it. Your phone reads its own health providers, your relay 
 
 Why people usually want this: an AI assistant, or an AI companion, that can actually see how you slept and how your body is doing today, instead of asking you to type it in every morning. That's one natural use of a personal health MCP, not the only one. The same endpoint works just as well for a self-tracking dashboard or your own analysis scripts.
 
+**Contents:** [What it can read](#what-it-can-read-today) · [Rules](#rules-the-project-holds-to) · [Verified environment](#verified-environment) · [Architecture](#how-the-pieces-fit-together) · [Repo map](#whats-in-the-repo) · [Install and verify](#install-and-verify-the-servicemcp) · [Android](#build-and-configure-android) · [Watch](#build-and-configure-the-watch) · [Failure semantics](#data-and-failure-semantics) · [Delivery status](#current-delivery-status) · [Tests and artifacts](#tests-and-artifacts)
+
 ## What it can read today
 
 | Source | Data |
@@ -49,25 +51,31 @@ The RPK sideloading path relies on the OrbitV community's work. Without it, the 
 
 ## How the pieces fit together
 
-```text
-vivo phone                                      vivo WATCH GT (WA2456C)
-  step provider    -> daily summaries             BlueOS health + sensor APIs
-  private sleep    -> sleep summary               durable on-watch queue
-  private care     -> latest HR / SpO2 / stress   HTTPS via the paired phone
-      |                                                 |
-      +--> Android bridge: Room + immutable outbox <-----+
-                              |
-                              v
-              Cloudflare Worker relay (D1 buffer)      you deploy this
-                              |
-                              v
-              Akari Health service (Node.js + SQLite)  you deploy this
-                              |
-                              v
-              Akari Health MCP (stdio / Streamable HTTP)
-                              |
-                              v
-                  ChatGPT / Claude / any MCP client
+```mermaid
+flowchart TB
+    subgraph PHONE["vivo phone"]
+        P1["daily activity<br/>steps · distance · calories"]
+        P2["private sleep<br/>stages · wake-ups · score"]
+        P3["latest vitals<br/>HR · SpO2 · stress"]
+    end
+    subgraph WATCH["vivo WATCH GT (WA2456C)"]
+        W1["BlueOS health + sensor APIs"]
+        W2["durable on-watch queue"]
+    end
+    A["Android bridge<br/>Room + immutable outbox"]
+    R["Cloudflare Worker relay<br/>D1 buffer"]
+    S["Akari Health service<br/>Node.js + SQLite"]
+    M["Akari Health MCP<br/>stdio / Streamable HTTP"]
+    C["ChatGPT / Claude / any MCP client"]
+    P1 --> A
+    P2 --> A
+    P3 --> A
+    W1 --> W2
+    W2 --> A
+    A --> R
+    R --> S
+    S --> M
+    M --> C
 ```
 
 Three shapes of data travel that path, and they are deliberately kept distinct:
@@ -230,6 +238,15 @@ vivo's official BlueXlink/device RPC pair was the original watch-to-phone candid
 ## Data and failure semantics
 
 Every watch observation is one immutable event. It contains the producer timestamp, metric, source device, status, and optionally the real value, sample timestamp, callback delta, session, and error. A phone natural-day summary is different: it's a versioned current row backed by immutable upload batches, and it is never disguised as a watch event. A phone sleep night is a third shape: one current row per source day, also backed by immutable batches.
+
+| Status | Meaning |
+|---|---|
+| `PASS` | a real measured value; a numeric zero is still `PASS` |
+| `NO_DATA` | the provider returned no observation |
+| `DENIED` | permission is missing or was revoked |
+| `UNSUPPORTED` | the device or firmware does not expose this path |
+| `API_MISSING` | the required API is absent on this build |
+| `ERROR` | the probe itself failed; the raw reason is kept |
 
 `PASS` requires a real value, and a legitimate numeric zero counts. Missing or failed measurements stay `NO_DATA`, `DENIED`, `UNSUPPORTED`, `API_MISSING`, or `ERROR`. No layer substitutes a stale value.
 
